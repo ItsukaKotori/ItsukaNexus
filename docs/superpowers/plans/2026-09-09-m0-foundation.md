@@ -1,5 +1,8 @@
 # ItsukaNexus M0（地基）Implementation Plan
 
+> **状态：✅ 已完成（2026-09-09）。** 全部任务收尾，验收四项全绿（窗口按钮显示版本 / cargo test / 热重载 / clippy 零警告）。
+> 环境变更记录：开发机由 Windows 迁移至 macOS（Apple Silicon）；行尾已统一 LF（.gitattributes）；Task 5 验证在 macOS 上执行。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 跑通 Tauri 2 + React-TS 应用骨架，交付自定义 `app_info` 命令（含单元测试），达到 clippy 零警告，作为后续所有里程碑的地基。
@@ -60,7 +63,7 @@ Result: pnpm `12.3.4` ✅（2026-09-09 已执行）
 - Consumes: Task 1 的 node/pnpm
 - Produces: 可 `pnpm tauri dev` 运行的骨架；`src-tauri/src/lib.rs` 中的 `run()` 入口（Task 3 修改）；模板自带 `greet` 命令（Task 3 删除）
 
-- [ ] **Step 1: 生成到临时子目录（根目录非空，不能直接生成）**
+- [x] **Step 1: 生成到临时子目录（根目录非空，不能直接生成）**
 
 ```bash
 cd "D:/CodeSpace/ItsukaNexus" && export PATH="/d/Develop/nodejs:/c/Users/ZYWUD/AppData/Roaming/npm:$PATH" && pnpm create tauri-app itsukanexus-scaffold --identifier dev.itsukanexus.app --template react-ts --manager pnpm --yes
@@ -68,17 +71,17 @@ cd "D:/CodeSpace/ItsukaNexus" && export PATH="/d/Develop/nodejs:/c/Users/ZYWUD/A
 
 Expected: 生成 `itsukanexus-scaffold/` 目录，含 `src/`、`src-tauri/`、`package.json` 等。若提示交互确认，全部接受默认。
 
-- [ ] **Step 2: 内容移到仓库根（含隐藏文件），删除临时目录**
+- [x] **Step 2: 内容移到仓库根（含隐藏文件），删除临时目录**
 
 ```bash
 cd "D:/CodeSpace/ItsukaNexus" && mv itsukanexus-scaffold/* itsukanexus-scaffold/.vscode . 2>/dev/null; mv itsukanexus-scaffold/.gitignore ./scaffold-gitignore 2>/dev/null; rmdir itsukanexus-scaffold
 ```
 
-- [ ] **Step 3: 合并两个 .gitignore（保留并集，去重）**
+- [x] **Step 3: 合并两个 .gitignore（保留并集，去重）**
 
 把 `scaffold-gitignore` 中我们根 `.gitignore` 没有的行（如 `*.local`、`src-tauri/build/` 等模板特有条目）并入 `.gitignore`，然后 `rm scaffold-gitignore`。
 
-- [ ] **Step 4: 统一命名（Cargo.toml + tauri.conf.json）**
+- [x] **Step 4: 统一命名（Cargo.toml + tauri.conf.json）**
 
 `src-tauri/Cargo.toml`：
 - `[package] name = "itsukanexus-scaffold"` → `name = "itsukanexus"`
@@ -87,7 +90,7 @@ cd "D:/CodeSpace/ItsukaNexus" && mv itsukanexus-scaffold/* itsukanexus-scaffold/
 
 `src-tauri/tauri.conf.json`：确认 `productName` 为 `"ItsukaNexus"`、`identifier` 为 `"dev.itsukanexus.app"`、`frontendDist`/`devUrl` 保持模板默认。
 
-- [ ] **Step 5: 安装依赖**
+- [x] **Step 5: 安装依赖**
 
 ```bash
 cd "D:/CodeSpace/ItsukaNexus" && export PATH="/d/Develop/nodejs:/c/Users/ZYWUD/AppData/Roaming/npm:$PATH" && pnpm install
@@ -95,7 +98,7 @@ cd "D:/CodeSpace/ItsukaNexus" && export PATH="/d/Develop/nodejs:/c/Users/ZYWUD/A
 
 Expected: `Done in ...s`，生成 `node_modules/` 与 `pnpm-lock.yaml`。
 
-- [ ] **Step 6: Rust 侧编译验证（不启动窗口）**
+- [x] **Step 6: Rust 侧编译验证（不启动窗口）**
 
 ```bash
 cd "D:/CodeSpace/ItsukaNexus/src-tauri" && cargo check
@@ -103,7 +106,7 @@ cd "D:/CodeSpace/ItsukaNexus/src-tauri" && cargo check
 
 Expected: `Finished`，零 error。（首次编译下载全部依赖，3-10 分钟属正常。）
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 ```bash
 cd "D:/CodeSpace/ItsukaNexus" && git add -A && git commit -m "chore: Tauri 2 + React-TS 脚手架（create-tauri-app）
@@ -111,7 +114,7 @@ cd "D:/CodeSpace/ItsukaNexus" && git add -A && git commit -m "chore: Tauri 2 + R
 Co-Authored-By: Claude Code <noreply@anthropic.com>"
 ```
 
-- [ ] **Step 8 (可选，需管理员 PowerShell，失败则跳过并记入 README 待办): 将 src-tauri/target 加入 Windows Defender 排除**
+- [x] **Step 8 (可选，需管理员 PowerShell，失败则跳过并记入 README 待办): 将 src-tauri/target 加入 Windows Defender 排除**
 
 避免后续频繁编译被实时扫描拖慢/误报（设计文档风险 #4）。
 
@@ -131,7 +134,7 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 
 **Rust 学习点（写给执行者）：** `env!("CARGO_PKG_*")` 编译期宏 vs `std::env` 运行期；`#[derive(Serialize)]` 如何让结构体跨 IPC；集成测试（tests/ 目录）与单元测试（#[cfg(test)]）的边界——lib crate 才能被集成测试导入。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `src-tauri/tests/app_info.rs`：
 
@@ -147,7 +150,7 @@ fn app_info_returns_name_version_platform() {
 }
 ```
 
-- [ ] **Step 2: 运行验证失败（红）**
+- [x] **Step 2: 运行验证失败（红）**
 
 ```bash
 cd "D:/CodeSpace/ItsukaNexus/src-tauri" && cargo test --test app_info
@@ -155,7 +158,7 @@ cd "D:/CodeSpace/ItsukaNexus/src-tauri" && cargo test --test app_info
 
 Expected: 编译错误 `unresolved module app`（红=测试有效）。
 
-- [ ] **Step 3: 最小实现**
+- [x] **Step 3: 最小实现**
 
 `src-tauri/src/app.rs`：
 
@@ -192,7 +195,7 @@ fn app_info() -> app::AppInfo {
 
 `generate_handler!` 清单里把 `greet` 换成 `app_info`。
 
-- [ ] **Step 4: 运行验证通过（绿）**
+- [x] **Step 4: 运行验证通过（绿）**
 
 ```bash
 cd "D:/CodeSpace/ItsukaNexus/src-tauri" && cargo test
@@ -200,7 +203,7 @@ cd "D:/CodeSpace/ItsukaNexus/src-tauri" && cargo test
 
 Expected: `app_info_returns_name_version_platform ... ok`，全部通过。
 
-- [ ] **Step 5: fmt + clippy 门槛**
+- [x] **Step 5: fmt + clippy 门槛**
 
 ```bash
 cd "D:/CodeSpace/ItsukaNexus/src-tauri" && cargo fmt && cargo clippy --all-targets -- -D warnings
@@ -208,7 +211,7 @@ cd "D:/CodeSpace/ItsukaNexus/src-tauri" && cargo fmt && cargo clippy --all-targe
 
 Expected: clippy 零输出零警告。（若报 lib.rs 中未使用的 import，删除之。）
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 cd "D:/CodeSpace/ItsukaNexus" && git add src-tauri/src src-tauri/tests && git commit -m "feat(m0): app_info 命令与 AppInfo 结构（含集成测试）
@@ -231,7 +234,7 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 
 说明：模板未配前端测试框架，M0 不引入（YAGNI——本任务逻辑是纯 IPC 调用与展示，由 Task 5 手动 E2E 覆盖；vitest 留到有真实前端逻辑的 M2 再议）。
 
-- [ ] **Step 1: 建 IPC 封装层**
+- [x] **Step 1: 建 IPC 封装层**
 
 `src/ipc/types.ts`：
 
@@ -256,7 +259,7 @@ export function getAppInfo(): Promise<AppInfo> {
 }
 ```
 
-- [ ] **Step 2: 重写 App.tsx**
+- [x] **Step 2: 重写 App.tsx**
 
 用下方实现整体替换模板演示代码（greet 输入框等），样式用内联（模板 css 文件保留不动）：
 
@@ -300,7 +303,7 @@ function App() {
 export default App;
 ```
 
-- [ ] **Step 3: 类型检查通过**
+- [x] **Step 3: 类型检查通过**
 
 ```bash
 cd "D:/CodeSpace/ItsukaNexus" && export PATH="/d/Develop/nodejs:/c/Users/ZYWUD/AppData/Roaming/npm:$PATH" && pnpm build
@@ -308,7 +311,7 @@ cd "D:/CodeSpace/ItsukaNexus" && export PATH="/d/Develop/nodejs:/c/Users/ZYWUD/A
 
 Expected: `tsc && vite build` 全绿，产出 `dist/`。（App.tsx 中对模板 logo svg 的引用已随重写移除；若 tsc 报未使用文件不算错误。）
 
-- [ ] **Step 4: 提交**
+- [x] **Step 4: 提交**
 
 ```bash
 cd "D:/CodeSpace/ItsukaNexus" && git add src/ && git commit -m "feat(m0): 前端 IPC 封装层与应用信息卡片
@@ -327,7 +330,7 @@ Co-Authored-By: Claude Code <noreply@anthropic.com>"
 - Consumes: Task 1-4 全部产出
 - Produces: M0 完成标准四项全绿的证据（对应设计文档 M0 章节）
 
-- [ ] **Step 1: 启动开发模式（标准①）**
+- [x] **Step 1: 启动开发模式（标准①）**
 
 ```bash
 cd "D:/CodeSpace/ItsukaNexus" && export PATH="/d/Develop/nodejs:/c/Users/ZYWUD/AppData/Roaming/npm:$PATH" && pnpm tauri dev
@@ -335,7 +338,7 @@ cd "D:/CodeSpace/ItsukaNexus" && export PATH="/d/Develop/nodejs:/c/Users/ZYWUD/A
 
 Expected: 首次 Rust 全量编译 3-10 分钟属正常；随后弹出窗口。点击"获取应用信息"按钮，显示 `name: itsukanexus`、`version: 0.1.0`、`platform: windows`。
 
-- [ ] **Step 2: 验证 Rust 热重载（标准③）**
+- [x] **Step 2: 验证 Rust 热重载（标准③）**
 
 保持 `tauri dev` 运行，修改 `src-tauri/src/app.rs` 中 `version` 一行：
 
@@ -345,7 +348,7 @@ version: format!("{}-dev", env!("CARGO_PKG_VERSION")),
 
 Expected: 数十秒内应用自动重编译并重启，按钮点击显示 `version: 0.1.0-dev`。验证后**改回原样**（`version: env!("CARGO_PKG_VERSION").to_string(),`）。
 
-- [ ] **Step 3: 回归测试与 lint（标准②④）**
+- [x] **Step 3: 回归测试与 lint（标准②④）**
 
 ```bash
 cd "D:/CodeSpace/ItsukaNexus/src-tauri" && cargo test && cargo clippy --all-targets -- -D warnings && cargo fmt --check
@@ -353,7 +356,7 @@ cd "D:/CodeSpace/ItsukaNexus/src-tauri" && cargo test && cargo clippy --all-targ
 
 Expected: 全部通过、零警告。
 
-- [ ] **Step 4: 提交（如 Step 2 有残留变更）并收尾**
+- [x] **Step 4: 提交（如 Step 2 有残留变更）并收尾**
 
 ```bash
 cd "D:/CodeSpace/ItsukaNexus" && git status --short && git add -A && git commit -m "chore(m0): 端到端验证通过（M0 完成）
