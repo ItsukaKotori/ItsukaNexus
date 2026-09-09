@@ -1,0 +1,5 @@
+/* 全局重置:body 默认 8px margin 会让 100vh 布局溢出 16px(底部裁切 + 常驻滚动条) */
+body {
+  margin: 0;
+  overflow: hidden;
+}
