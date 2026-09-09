@@ -1521,3 +1521,25 @@ Expected: 三平台 Rust 矩阵 + 前端构建全绿(Windows 上 session_manager
 - **有意的范围裁剪(非遗漏)**:背压链的有界队列 M1 即有(sync_channel 64),但"慢消费者观察"是 M2 完成标准②,不在本计划;replay/Channel/utf8 增量解码均 M2;多会话 UI(zustand/terminalManager)M2——M1 单会话组件即 spec M1 交付物原文。
 - **占位符扫描**:无 TBD/TODO;全部代码步骤含完整代码;Task 4 已预判 `lookup` 借用检查问题并给出两行拆法。✅
 - **类型一致性**:`SessionEvent` serde `rename_all=camelCase + tag="type"` → 序列化为 `{type, id, data}` / `{type, id, code}`,Task 6 `types.ts` 的 `SessionOutputEvent/SessionExitEvent` 字段 `type/id/data/code` 与之对齐;`SessionCreated.sessionId` ↔ TS `sessionId`;命令名 snake_case 五处对齐(`session_create` 等);`SessionId::from(uuid)` 在 Task 5 使用、Task 2 补齐定义——**注意 Task 2 的 ids.rs 代码块不含 From 实现,Task 5 Step 1 末尾单独给出,执行 Task 2 时可顺手一并写入**(放置位置已写明)。✅
+
+---
+
+## 完成记录(2026-09-10,PR #1 已合并)
+
+全部 7 任务完成,最终全分支审查(With fixes)的三项 Important 已在合并前修复(视口 body margin / CI timeout-minutes / 自然退出 Exit{code:0} 测试),另修 Windows CI 两处 PTY 测试基础设施(阻塞读有界化、ConPTY DSR 代答)。CI 四检查全绿。
+
+### M2 必办(执行 M1 时的裁定与遗留,按优先级)
+
+1. **孙进程持 slave fd 时 Exit 永不发出 + 每会话泄漏 3 线程**(P7,必修):用户在终端跑 nohup/后台任务即可触发。修法:进程组 kill(Unix setsid/killpg)或 wait 线程 join 超时后带序外标记发 Exit。
+2. **初始输出订阅竞态**(P8):create 返回前 PTY 已产输出,前端 listen 完成前的事件被丢。M2 store 化时改为"先订阅占位、后 create"。
+3. **事件键名统一**:M1 载荷用 `id`,spec §1.4 写 `session_id`;M2 引入 `session://state` 时统一键名,建议 TS 类型从 Rust 生成。
+4. **kill 结果按平台区分并接日志**:上游 portable-pty 0.9.0 `WinChildKiller::kill` 成败判定反转(成功返 Err),M1 以 Exit 事件为真相绕过;Unix 侧 kill 错误也被吞,M2 接 tauri-plugin-log 后按 `#[cfg(windows)]` 区分。
+5. **send_input/resize 持整表锁跨写 I/O**:单会话 writer 阻塞会卡全部会话的 create/stop;M2 拆 per-session 句柄(actor 化即根治)。
+6. **自然退出后注册表留死条目**(后续 send_input 得 Pty(EIO) 而非 SessionNotFound):wait 线程清表。
+7. 其他小项:pty/decode.rs 增量 UTF-8 解码替换 from_utf8_lossy(spec 既定)、events.ts listen 加 .catch、主动停止后晚到 Exit 覆盖状态、xterm >500kB chunk 可选代码分割。
+
+### Windows PTY 知识库(踩坑记录)
+
+- ConPTY 启动期发 `ESC[6n`(DSR 光标查询),**无应答则不产出任何子进程输出**;真实应用 xterm.js 自动应答,裸测试需代答 `ESC[1;1R`(见 tests/pty_session.rs 的 recv_contains)。
+- portable-pty 0.9 的 `Child::wait` 在 ConPTY 上可能长时间阻塞,测试中须有界化(辅助线程 + recv_timeout)。
+- portable-pty 0.9 实际 API 与常见记忆差异:`Master`→`MasterPty`、`exit_code()` 返回 u32、`kill` 需经 `clone_killer()` 且 `&mut self`。
