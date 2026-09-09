@@ -13,7 +13,11 @@ use itsukanexus_lib::pty::session::PtySession;
 
 /// 有界读取:阻塞 read 在辅助线程进行(泄漏随测试进程退出,可接受),
 /// 测试线程只做 recv_timeout。超时时 panic 并带上已收到的内容,便于 CI 诊断。
-fn recv_contains(reader: Box<dyn Read + Send>, needle: &str) -> String {
+///
+/// Windows ConPTY 启动期会向终端发 DSR 光标查询(`ESC[6n`),等到应答
+/// (`ESC[<row>;<col>R`)后才继续产出子进程输出;真实应用里 xterm.js 自动
+/// 应答,裸测试读端经由 `sess` 代答 `ESC[1;1R`,否则超时且只收到查询本身。
+fn recv_contains(reader: Box<dyn Read + Send>, sess: &PtySession, needle: &str) -> String {
     let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
     std::thread::spawn(move || {
         let mut reader = reader;
@@ -31,6 +35,8 @@ fn recv_contains(reader: Box<dyn Read + Send>, needle: &str) -> String {
     });
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let mut acc = Vec::new();
+    // 已应答扫描位:该位置之前的字节均已检查过 DSR 并代答(可多次出现,每次都答)
+    let mut dsr_replied: usize = 0;
     loop {
         let now = std::time::Instant::now();
         if now >= deadline {
@@ -43,6 +49,12 @@ fn recv_contains(reader: Box<dyn Read + Send>, needle: &str) -> String {
         match rx.recv_timeout(deadline - now) {
             Ok(chunk) => {
                 acc.extend_from_slice(&chunk);
+                // ConPTY 启动期发 ESC[6n 询问光标位置,无应答则不再产出后续输出;
+                // 真实终端(xterm.js)会自动应答,裸测试在此代答
+                while let Some(pos) = acc[dsr_replied..].windows(4).position(|w| w == b"\x1b[6n") {
+                    let _ = sess.write_all(b"\x1b[1;1R");
+                    dsr_replied += pos + 4;
+                }
                 if String::from_utf8_lossy(&acc).contains(needle) {
                     return String::from_utf8_lossy(&acc).into_owned();
                 }
@@ -69,7 +81,7 @@ fn spawn_run_and_exit_oneshot() {
     };
     let (sess, mut child) = PtySession::spawn(prog, &args, 80, 24).expect("spawn 失败");
     let reader = sess.take_reader();
-    let output = recv_contains(reader, "hello-pty");
+    let output = recv_contains(reader, &sess, "hello-pty");
     assert!(output.contains("hello-pty"));
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -90,7 +102,7 @@ fn write_input_gets_echoed_by_cat() {
     let reader = sess.take_reader();
 
     sess.write_all(b"marker-xyz-9876\n").expect("write 失败");
-    recv_contains(reader, "marker-xyz-9876");
+    recv_contains(reader, &sess, "marker-xyz-9876");
 
     // kill 后 wait 应能返回(子进程被信号杀死,退出码非 0 即可)
     sess.kill().expect("kill 失败");
