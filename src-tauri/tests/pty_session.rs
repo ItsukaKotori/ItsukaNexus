@@ -4,7 +4,6 @@
 use std::io::Read;
 use std::time::Duration;
 
-use itsukanexus_lib::ids::SessionId;
 use itsukanexus_lib::pty::session::PtySession;
 
 fn recv_contains(reader: &mut dyn Read, needle: &str) -> String {
@@ -39,8 +38,7 @@ fn spawn_run_and_exit_oneshot() {
     } else {
         ("/bin/sh", vec!["-c", "echo hello-pty"])
     };
-    let (sess, mut child) =
-        PtySession::spawn(SessionId::new(), prog, &args, 80, 24).expect("spawn 失败");
+    let (sess, mut child) = PtySession::spawn(prog, &args, 80, 24).expect("spawn 失败");
     let mut reader = sess.take_reader();
     let output = recv_contains(&mut reader, "hello-pty");
     assert!(output.contains("hello-pty"));
@@ -52,8 +50,7 @@ fn spawn_run_and_exit_oneshot() {
 #[test]
 fn write_input_gets_echoed_by_cat() {
     // 交互回显:cat 把 stdin 原样吐回,验证 write_all → PTY → read 全链路
-    let (sess, mut child) =
-        PtySession::spawn(SessionId::new(), "/bin/cat", &[], 80, 24).expect("spawn 失败");
+    let (sess, mut child) = PtySession::spawn("/bin/cat", &[], 80, 24).expect("spawn 失败");
     let mut reader = sess.take_reader();
 
     sess.write_all(b"marker-xyz-9876\n").expect("write 失败");
@@ -72,8 +69,7 @@ fn resize_does_not_error() {
     } else {
         ("/bin/sh", vec!["-c", "exit 0"])
     };
-    let (sess, mut child) =
-        PtySession::spawn(SessionId::new(), prog, &args, 80, 24).expect("spawn 失败");
+    let (sess, mut child) = PtySession::spawn(prog, &args, 80, 24).expect("spawn 失败");
     sess.resize(120, 40).expect("resize 失败");
     let _ = child.wait();
 }

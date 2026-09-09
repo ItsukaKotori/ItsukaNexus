@@ -11,11 +11,8 @@ use portable_pty::{
 };
 
 use crate::error::NexusError;
-use crate::ids::SessionId;
 
 pub struct PtySession {
-    #[allow(dead_code)] // M1 尚未读 session_id;manager(Task 4)会用
-    session_id: SessionId,
     master: Box<dyn MasterPty + Send>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     // ChildKiller::kill 需要 &mut,而 kill 语义上谁都能调(&self)——用 Mutex 提供内部可变性
@@ -33,7 +30,6 @@ impl PtySession {
     /// 返回 (会话句柄, child):child 必须立刻交给专属线程调 wait(),
     /// 否则进程退出后无人收割(Windows 上即"僵尸句柄",spec M1 完成标准③)。
     pub fn spawn(
-        session_id: SessionId,
         program: &str,
         args: &[&str],
         cols: u16,
@@ -60,7 +56,6 @@ impl PtySession {
         let killer = Mutex::new(child.clone_killer());
 
         let sess = Self {
-            session_id,
             master: pair.master,
             writer: Arc::new(Mutex::new(writer)),
             killer,

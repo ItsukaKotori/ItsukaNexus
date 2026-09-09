@@ -19,6 +19,8 @@ jobs:
       matrix:
         os: [macos-latest, ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    # 测试存在理论上可无限阻塞的 read 路径,封顶兜底(GitHub 默认 360 分钟太久)
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -52,6 +54,7 @@ jobs:
   frontend:
     name: Frontend build (tsc + vite)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 

@@ -92,12 +92,11 @@ pub fn run() {
             // (M2 重构为 EventBus 订阅;M1 一条闭包足够)
             let handle: AppHandle = app.handle().clone();
             let sink = Arc::new(move |ev: SessionEvent| {
-                use SessionEvent::*;
-                let (event, payload) = match ev {
-                    Output { .. } => ("session://output", ev.clone()),
-                    Exit { .. } => ("session://exit", ev),
+                let event = match &ev {
+                    SessionEvent::Output { .. } => "session://output",
+                    SessionEvent::Exit { .. } => "session://exit",
                 };
-                let _ = handle.emit(event, payload);
+                let _ = handle.emit(event, ev);
             });
             app.manage(SessionManager::new(sink));
             Ok(())

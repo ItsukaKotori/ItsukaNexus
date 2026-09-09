@@ -1455,9 +1455,10 @@ claude --version     # 或任何 CLI;不行就换 git --version
 git log              # 分页器:按 q 退出,应无花屏
 vim /etc/hosts       # 全屏 TUI:方向键、:q 退出,应无残影错位
 printf '\x1b[31mred\x1b[0m\n'   # ANSI 颜色
+exit                 # 自然退出:顶栏状态变"已退出",系统无残留 shell 进程(最终修复补了自动化测试)
 ```
 
-Expected: 输入回显正常、颜色正常、分页器与 vim 渲染无花屏、scrollback 可滚动。
+Expected: 输入回显正常、颜色正常、分页器与 vim 渲染无花屏、scrollback 可滚动;`exit` 自然退出后状态变"已退出"且无残留进程。
 
 - [ ] **Step 2: resize 验证(标准②)**
 
@@ -1507,6 +1508,8 @@ git status --short
 git push -u origin m1-pty-terminal
 gh run watch   # 或 gh run list 轮询
 ```
+
+> 注:CI 由 `pull_request` 触发(特性分支的 push 不触发,`push` 仅限 main),`gh run watch` 看不到运行;实操是建 PR 后用 `gh pr checks` 观察。
 
 Expected: 三平台 Rust 矩阵 + 前端构建全绿(Windows 上 session_manager 测试显示 skipped/0 属预期,`#![cfg(unix)]`)。
 

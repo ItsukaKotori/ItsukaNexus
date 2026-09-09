@@ -76,6 +76,31 @@ fn stop_kills_session_and_emits_exit() {
 }
 
 #[test]
+fn natural_exit_emits_zero_code() {
+    // 自然退出:钉住 wait 线程"先 join batcher 再发 Exit"的不变量——
+    // Exit 事件在 batcher 收尾后到达,且退出码为 0
+    let (mgr, rx) = manager_with_channel();
+    let id = mgr.create("shell", 80, 24).expect("create 失败");
+
+    // shell 尚未就绪也没关系:输入停在 PTY 缓冲,shell 起来后照常读到
+    mgr.send_input(id, "exit\n").expect("send 失败");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        assert!(Instant::now() < deadline, "10 秒内未收到 Exit 事件");
+        match rx.recv_timeout(Duration::from_millis(500)) {
+            Ok(SessionEvent::Exit { id: ev_id, code }) if ev_id == id => {
+                assert_eq!(code, 0, "自然退出的 shell 退出码应为 0");
+                break;
+            }
+            Ok(_) => {}
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => panic!("事件通道意外关闭"),
+        }
+    }
+}
+
+#[test]
 fn create_rejects_unknown_provider() {
     let (mgr, _rx) = manager_with_channel();
     let err = mgr.create("claude", 80, 24).unwrap_err();

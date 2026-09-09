@@ -60,10 +60,9 @@ impl SessionManager {
         }
         let id = SessionId::new();
         let shell = default_shell();
-        let program: String = shell;
         // take_reader 内部的 expect(见 PtySession)是 panic 路径,前提是 master 存活——
         // 这里 session 刚 spawn、master 尚未 drop/关闭,前提成立(Task 2 遗留复查项,维持现状)。
-        let (session, mut child) = PtySession::spawn(id, &program, &[], cols, rows)?;
+        let (session, mut child) = PtySession::spawn(&shell, &[], cols, rows)?;
 
         let reader = session.take_reader();
         let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(QUEUE_DEPTH);
