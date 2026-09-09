@@ -3,6 +3,10 @@
 // `itsukanexus_lib::app::...` 路径导入，私有模块对外不可见。
 pub mod app;
 
+pub mod error;
+pub mod ids;
+pub mod pty;
+
 // Tauri 命令层：只做薄封装（把领域函数暴露给 IPC），
 // 业务逻辑保持在 app.rs 纯函数里，这样才可被集成测试直接调用。
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
