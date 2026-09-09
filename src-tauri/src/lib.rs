@@ -3,6 +3,7 @@
 // `itsukanexus_lib::app::...` 路径导入，私有模块对外不可见。
 pub mod app;
 
+pub mod agent;
 pub mod error;
 pub mod ids;
 pub mod pty;
