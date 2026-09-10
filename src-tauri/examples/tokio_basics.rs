@@ -21,10 +21,9 @@ async fn main() {
     for _ in 0..2 {
         got.push(rx.recv().await.unwrap());
     }
-    println!(
-        "consumed {:?}, pausing (producer must be parked on send #3)",
-        got
-    );
+    // 已消费 2 条释放了 2 个 permit:暂停期内 send(2)/send(3) 可完成入队,
+    // 真正被背压挂起的是 send(4)——直到 drain 恢复消费(2026-09-10 审查勘误)
+    println!("consumed {:?}, pausing (producer parks on send #4)", got);
     tokio::time::sleep(Duration::from_millis(200)).await;
     while let Some(v) = rx.recv().await {
         got.push(v);
