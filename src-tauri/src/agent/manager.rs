@@ -42,6 +42,9 @@ const REPLAY_CAP: usize = 256 * 1024;
 const JOIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// 优雅关停宽限期:发 \x03 后等子进程自行退出的上限
 const GRACE_PERIOD: Duration = Duration::from_secs(2);
+/// \x03 写入超时(I1):PTY 输入缓冲满时 write_all 可无限期阻塞,
+/// 必须限时;写不进去 ≈ 进程不响应,超时直接落 kill 路径
+const CTRL_C_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 /// 优雅关停轮询间隔(状态迁移的真正通知由 wait 任务驱动,这里只是等它)
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
 
@@ -246,9 +249,17 @@ impl SessionManager {
                 // 锁不跨 await:把发送端克隆出来再慢递(订阅被替换时旧克隆自然耗尽)
                 let tx = sub_b.lock().expect("订阅锁").clone();
                 if let Some(tx) = tx {
-                    // 订阅通道满 = 前端消费慢:在此挂起,背压经 raw 通道向 reader 传导
-                    if tx.send(of).await.is_err() {
-                        // 订阅者已 drop(被替换/关闭):只留 replay
+                    // 订阅通道满 = 前端消费慢:在此挂起,背压经 raw 通道向 reader
+                    // 传导。send 必须与 cancelled 竞争(I2):否则强杀后任务树被
+                    // 停滞的订阅者钉住,cancel 收不了尾
+                    tokio::select! {
+                        r = tx.send(of) => {
+                            if r.is_err() {
+                                // 订阅者已 drop(被替换/关闭):只留 replay
+                            }
+                        }
+                        // cancel 分支 break:残余帧弃置——强杀语义(见偏差①)
+                        _ = cancel_b.cancelled() => break,
                     }
                 }
             }
@@ -407,11 +418,17 @@ impl SessionManager {
 
         if !force {
             let writer = handle.writer.clone();
-            let _ = tokio::task::spawn_blocking(move || {
-                let mut w = writer.lock().expect("writer 锁被毒化");
-                let _ = w.write_all(b"\x03");
-                let _ = w.flush();
-            })
+            // \x03 写包超时(I1):缓冲满时 write_all 永久阻塞会击穿宽限设计;
+            // 超时视同宽限失败,直接落 kill 路径。被超时弃置的 spawn_blocking
+            // 线程随写入最终完成/失败自然收场(泄漏上限一个,进程退出兜底)
+            let _ = tokio::time::timeout(
+                CTRL_C_WRITE_TIMEOUT,
+                tokio::task::spawn_blocking(move || {
+                    let mut w = writer.lock().expect("writer 锁被毒化");
+                    let _ = w.write_all(b"\x03");
+                    let _ = w.flush();
+                }),
+            )
             .await;
             // 轮询快照等退出(200ms 间隔;真正驱动迁移的是 wait 任务)
             let inner = self.inner.clone();

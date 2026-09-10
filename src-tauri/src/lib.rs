@@ -71,7 +71,7 @@ fn session_resize(
 async fn session_stop(
     state: State<'_, SessionManager>,
     session_id: String,
-    force: Option<bool>, // M2 起接通:false 走优雅关停(宽限后强杀),默认强杀
+    force: Option<bool>, // M2 起接通:缺省 false = 优雅关停(先 \x03、宽限,超时再强杀)
 ) -> Result<(), String> {
     let id: SessionId = parse_id(session_id)?;
     state

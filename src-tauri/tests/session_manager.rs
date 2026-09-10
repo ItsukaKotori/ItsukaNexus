@@ -202,11 +202,19 @@ async fn subscribe_replays_history_and_keeps_seq_monotonic() {
         "replay 应包含订阅前的输出,实际 {:?}",
         second.replay
     );
-    let closed = tokio::time::timeout(Duration::from_secs(5), first_rx.recv()).await;
-    assert!(
-        matches!(closed, Ok(None)),
-        "替换后旧订阅通道应关闭,实际 {closed:?}"
-    );
+    // 旧通道 drain 至关闭:负载下 marker 之后的提示符帧可能仍在旧通道,
+    // 单次 recv 断言 None 会 flake;deadline 内循环收完存量,通道终将关闭
+    // (发送端已被替换,克隆随发送完成耗尽),存量帧内容不 assert
+    let dl = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let now = tokio::time::Instant::now();
+        assert!(now < dl, "5 秒内旧订阅通道未关闭");
+        match tokio::time::timeout(dl - now, first_rx.recv()).await {
+            Ok(Some(_leftover)) => {}
+            Ok(None) => break, // 发送端已替换:通道关闭,断言成立
+            Err(_) => panic!("5 秒内旧订阅通道未关闭"),
+        }
+    }
 
     // 后续输出经新通道到达,seq 跨订阅单调不回退
     mgr.send_input(id, "echo after-replay-88\n")
