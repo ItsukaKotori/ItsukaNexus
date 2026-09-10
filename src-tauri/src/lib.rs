@@ -94,6 +94,9 @@ pub fn run() {
             let sink = Arc::new(move |ev: SessionEvent| {
                 let event = match &ev {
                     SessionEvent::Output { .. } => "session://output",
+                    // M2 过渡态:状态机已入类型,但 manager 尚不发 State 事件
+                    // (无状态表,无从谈起迁移);Task 5 重写编排时接通
+                    SessionEvent::State(_) => "session://state",
                     SessionEvent::Exit { .. } => "session://exit",
                 };
                 let _ = handle.emit(event, ev);

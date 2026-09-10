@@ -21,12 +21,19 @@ fn wait_output_contains(rx: &mpsc::Receiver<SessionEvent>, id: SessionId, needle
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
         match rx.recv_timeout(Duration::from_millis(500)) {
-            Ok(SessionEvent::Output { id: ev_id, data }) if ev_id == id => {
+            Ok(SessionEvent::Output {
+                session_id: ev_id,
+                data,
+                ..
+            }) if ev_id == id => {
                 if data.contains(needle) {
                     return;
                 }
             }
-            Ok(SessionEvent::Exit { id: ev_id, code }) if ev_id == id => {
+            Ok(SessionEvent::Exit {
+                session_id: ev_id,
+                code,
+            }) if ev_id == id => {
                 panic!("会话提前退出(code={code}),还没等到 {needle:?}")
             }
             Ok(_) => {}
@@ -59,7 +66,10 @@ fn stop_kills_session_and_emits_exit() {
     loop {
         assert!(Instant::now() < deadline, "10 秒内未收到 Exit 事件");
         match rx.recv_timeout(Duration::from_millis(500)) {
-            Ok(SessionEvent::Exit { id: ev_id, code }) if ev_id == id => {
+            Ok(SessionEvent::Exit {
+                session_id: ev_id,
+                code,
+            }) if ev_id == id => {
                 assert_ne!(code, 0, "被 kill 的 shell 退出码应非 0");
                 break;
             }
@@ -89,7 +99,10 @@ fn natural_exit_emits_zero_code() {
     loop {
         assert!(Instant::now() < deadline, "10 秒内未收到 Exit 事件");
         match rx.recv_timeout(Duration::from_millis(500)) {
-            Ok(SessionEvent::Exit { id: ev_id, code }) if ev_id == id => {
+            Ok(SessionEvent::Exit {
+                session_id: ev_id,
+                code,
+            }) if ev_id == id => {
                 assert_eq!(code, 0, "自然退出的 shell 退出码应为 0");
                 break;
             }

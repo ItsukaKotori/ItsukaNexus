@@ -22,8 +22,16 @@ const QUEUE_DEPTH: usize = 64;
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase", tag = "type")]
 pub enum SessionEvent {
-    Output { id: SessionId, data: String },
-    Exit { id: SessionId, code: i32 },
+    Output {
+        session_id: SessionId,
+        data: String,
+        seq: u64,
+    },
+    State(crate::agent::state::StateChange),
+    Exit {
+        session_id: SessionId,
+        code: i32,
+    },
 }
 
 pub type EventSink = Arc<dyn Fn(SessionEvent) + Send + Sync>;
@@ -86,10 +94,18 @@ impl SessionManager {
         // 线程 2/3:batcher——合帧后转 String 经 sink 通知
         let sink_output = self.sink.clone();
         let batcher: JoinHandle<()> = std::thread::spawn(move || {
+            // 每会话局部输出序号(M2 过渡形态:仅 Output 单调递增,
+            // 单一 batcher 线程内递增,天然无竞争;Task 5 重写编排时语义不变)
+            let mut seq = 0u64;
             while let Some(frame) = next_frame(&rx, FRAME_WINDOW, FRAME_MAX_BYTES) {
                 // M1 临时方案(spec 明示):lossy 解码,跨 chunk 多字节字符可能出替换符,M2 换增量解码器
                 let data = String::from_utf8_lossy(&frame).into_owned();
-                sink_output(SessionEvent::Output { id, data });
+                sink_output(SessionEvent::Output {
+                    session_id: id,
+                    data,
+                    seq,
+                });
+                seq += 1;
             }
         });
 
@@ -104,7 +120,10 @@ impl SessionManager {
                 Err(_) => -1,
             };
             let _ = batcher.join();
-            sink_exit(SessionEvent::Exit { id, code });
+            sink_exit(SessionEvent::Exit {
+                session_id: id,
+                code,
+            });
         });
 
         self.sessions
