@@ -19,29 +19,42 @@ impl Decoder {
         let mut buf = std::mem::take(&mut self.pending);
         buf.extend_from_slice(bytes);
 
-        match std::str::from_utf8(&buf) {
-            Ok(s) => s.to_string(),
-            Err(e) => {
-                let valid_up_to = e.valid_up_to();
-                let mut out = String::with_capacity(buf.len());
-                // 1) 完整前缀直接收录(前缀已被 from_utf8 确认合法,unwrap 不会触发)
-                let valid = std::str::from_utf8(&buf[..valid_up_to]).unwrap();
-                out.push_str(valid);
-                match e.error_len() {
-                    // 2) 尾部只是不完整:扣留,等下一块
-                    None => {
-                        self.pending = buf[valid_up_to..].to_vec();
-                    }
-                    // 3) 确实非法:替换符顶替坏字节,从下一字节重同步继续解
-                    Some(bad_len) => {
-                        out.push('\u{FFFD}');
-                        let rest = &buf[valid_up_to + bad_len..];
-                        // 剩余部分递归式处理(一次 feed 理论上可能多个坏字节)
-                        let tail = self.feed(rest);
-                        out.push_str(&tail);
+        let mut rest: &[u8] = &buf;
+        let mut err = match std::str::from_utf8(rest) {
+            // 快路径:整块合法 → 零拷贝直接取回(PTY 文本流的常态)
+            Ok(_) => return String::from_utf8(buf).unwrap(),
+            Err(e) => e,
+        };
+
+        // 慢路径:迭代重同步(loop 而非递归)。PTY 流可能整块是非 UTF-8
+        // 字节(如 cat /dev/urandom),递归每层只推进 1 个坏字节,大垃圾块
+        // 会有栈溢出与 O(n²) 重解码风险;loop 每轮消费"合法前缀 + 一个
+        // 替换符",栈深 O(1)、整体单趟 O(n)。
+        // 坏字节最坏每个展开成一个 U+FFFD(3 字节),按 3 倍预留容量免重分配。
+        let mut out = String::with_capacity(buf.len().saturating_mul(3));
+        loop {
+            let valid_up_to = err.valid_up_to();
+            // 1) 完整前缀直接收录(已被 from_utf8 确认合法,unwrap 不会触发)
+            let valid = std::str::from_utf8(&rest[..valid_up_to]).unwrap();
+            out.push_str(valid);
+            match err.error_len() {
+                // 2) 尾部只是不完整:扣留,等下一块续上
+                None => {
+                    self.pending = rest[valid_up_to..].to_vec();
+                    return out;
+                }
+                // 3) 确实非法:替换符顶替坏字节,从下一字节重同步继续解
+                Some(bad_len) => {
+                    out.push('\u{FFFD}');
+                    rest = &rest[valid_up_to + bad_len..];
+                    match std::str::from_utf8(rest) {
+                        Ok(s) => {
+                            out.push_str(s);
+                            return out;
+                        }
+                        Err(e) => err = e,
                     }
                 }
-                out
             }
         }
     }
@@ -132,5 +145,15 @@ mod tests {
             let mut d = Decoder::new();
             assert_eq!(feed_chunks(&mut d, bytes, &[k]), text, "切分点 {k}");
         }
+    }
+
+    #[test]
+    fn large_garbage_block_does_not_blow_stack() {
+        let mut d = Decoder::new();
+        let garbage = vec![0xFFu8; 64 * 1024];
+        let out = d.feed(&garbage);
+        assert_eq!(out.chars().count(), 64 * 1024, "每个坏字节一个替换符");
+        assert!(out.chars().all(|c| c == '\u{FFFD}'));
+        assert_eq!(d.pending(), 0);
     }
 }
