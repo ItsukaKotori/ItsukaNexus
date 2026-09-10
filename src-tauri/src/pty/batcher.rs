@@ -1,5 +1,6 @@
-// 合帧:reader 线程的 8KB 原始块 → UI 可消化的帧(spec §1.3 背压链中间级)。
-// 纯函数设计:不拥有线程、不碰 Tauri,时间行为可被单元测试钉死。
+// 合帧:reader 的 8KB 原始块 → UI 可消化的帧(spec §1.3 背压链中间级)。
+// 纯函数设计:不拥有线程/任务、不碰 Tauri,时间行为可被单元测试钉死。
+// 同步版(next_frame)留给 M1 单测;M2 编排消费异步版(next_frame_async)。
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
@@ -23,6 +24,33 @@ pub fn next_frame(rx: &Receiver<Vec<u8>>, window: Duration, max_bytes: usize) ->
         match rx.recv_timeout(deadline - now) {
             Ok(chunk) => frame.extend_from_slice(&chunk),
             Err(_) => break, // 超时或通道关闭:把手头的交出去
+        }
+    }
+    Some(frame)
+}
+
+/// `next_frame` 的 async 版,语义逐条对齐:挂起等第一块;窗口内继续并块;
+/// 通道关闭且无数据 → None(调用方任务退出)。
+/// 取消安全性:`rx.recv()` 本身可取消;整段 future 被丢弃时(如外层 select!
+/// 走了关停分支)已并入未交出的窗口数据随之丢弃——仅发生在主动关停路径。
+pub async fn next_frame_async(
+    rx: &mut tokio::sync::mpsc::Receiver<Vec<u8>>,
+    window: Duration,
+    max_bytes: usize,
+) -> Option<Vec<u8>> {
+    let mut frame = rx.recv().await?;
+    let deadline = tokio::time::Instant::now() + window;
+    loop {
+        if frame.len() >= max_bytes {
+            break;
+        }
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            break;
+        }
+        match tokio::time::timeout_at(deadline, rx.recv()).await {
+            Ok(Some(chunk)) => frame.extend_from_slice(&chunk),
+            Ok(None) | Err(_) => break, // 通道关闭或窗口到期:把手头的交出去
         }
     }
     Some(frame)

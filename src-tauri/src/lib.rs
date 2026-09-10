@@ -30,14 +30,15 @@ struct SessionCreated {
 }
 
 #[tauri::command]
-fn session_create(
-    state: State<SessionManager>,
+async fn session_create(
+    state: State<'_, SessionManager>,
     provider_id: String,
     cols: Option<u16>,
     rows: Option<u16>,
 ) -> Result<SessionCreated, String> {
     let id = state
         .create(&provider_id, cols.unwrap_or(80), rows.unwrap_or(24))
+        .await
         .map_err(|e| e.to_string())?;
     Ok(SessionCreated {
         session_id: id,
@@ -46,13 +47,13 @@ fn session_create(
 }
 
 #[tauri::command]
-fn session_send_input(
-    state: State<SessionManager>,
+async fn session_send_input(
+    state: State<'_, SessionManager>,
     session_id: String,
     data: String,
 ) -> Result<(), String> {
     let id: SessionId = parse_id(session_id)?;
-    state.send_input(id, &data).map_err(|e| e.to_string())
+    state.send_input(id, &data).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -67,14 +68,16 @@ fn session_resize(
 }
 
 #[tauri::command]
-fn session_stop(
-    state: State<SessionManager>,
+async fn session_stop(
+    state: State<'_, SessionManager>,
     session_id: String,
-    force: Option<bool>, // M1 忽略:一律强杀,M2 实现优雅关停
+    force: Option<bool>, // M2 起接通:false 走优雅关停(宽限后强杀),默认强杀
 ) -> Result<(), String> {
-    let _ = force;
     let id: SessionId = parse_id(session_id)?;
-    state.stop(id).map_err(|e| e.to_string())
+    state
+        .stop(id, force.unwrap_or(false))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 fn parse_id(s: String) -> Result<SessionId, String> {
@@ -93,9 +96,9 @@ pub fn run() {
             let handle: AppHandle = app.handle().clone();
             let sink = Arc::new(move |ev: SessionEvent| {
                 let event = match &ev {
+                    // M2 起 Output 不再走全局 sink(per-session 订阅下发),
+                    // 该臂仅为穷尽匹配保留,Task 6 随"session://output 废除"删除
                     SessionEvent::Output { .. } => "session://output",
-                    // M2 过渡态:状态机已入类型,但 manager 尚不发 State 事件
-                    // (无状态表,无从谈起迁移);Task 5 重写编排时接通
                     SessionEvent::State(_) => "session://state",
                     SessionEvent::Exit { .. } => "session://exit",
                 };
