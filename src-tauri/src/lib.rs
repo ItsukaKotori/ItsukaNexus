@@ -1,10 +1,12 @@
 // 领域模块声明：命令变多后演进为 commands/ 目录。
 pub mod agent;
 pub mod app;
+pub mod config;
 pub mod error;
 pub mod ids;
 pub mod pty;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde::Serialize;
@@ -12,6 +14,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use agent::manager::{SessionEvent, SessionManager, Subscription};
 use agent::state::{SessionSnapshot, SessionState};
+use config::model::AppConfig;
 use ids::SessionId;
 
 // ---------- app_info(M0)----------
@@ -159,9 +162,33 @@ fn parse_id(s: String) -> Result<SessionId, String> {
         .map_err(|e| format!("非法 session id {s:?}: {e}"))
 }
 
+// ---------- config_*(M2)----------
+
+/// 配置目录的 State 注入体:setup 里从 app_config_dir() 解析一次,
+/// 命令侧只拿 PathBuf——store 层保持无 tauri 依赖(spec §1.3)。
+struct ConfigDir(PathBuf);
+
+#[tauri::command]
+fn config_get(dir: State<'_, ConfigDir>) -> Result<AppConfig, String> {
+    Ok(config::store::load_or_create(&dir.0))
+}
+
+/// 保存后重新 load 返回落盘值(以磁盘为准,而非调用方入参)。
+#[tauri::command]
+fn config_save(dir: State<'_, ConfigDir>, config: AppConfig) -> Result<AppConfig, String> {
+    config::store::save(&dir.0, &config).map_err(|e| e.to_string())?;
+    Ok(config::store::load_or_create(&dir.0))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // log 插件最先注册:后续插件/应用的日志才能被接住(文件 + 控制台,info 起)
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .level(log::LevelFilter::Info)
+                .build(),
+        )
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             // 事件缝的 IPC 端:把 SessionEvent 转 emit。
@@ -178,6 +205,9 @@ pub fn run() {
                 let _ = handle.emit(event, ev);
             });
             app.manage(SessionManager::new(sink));
+            app.manage(ConfigDir(
+                app.path().app_config_dir().expect("解析应用配置目录失败"),
+            ));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -187,7 +217,9 @@ pub fn run() {
             session_send_input,
             session_resize,
             session_stop,
-            session_list
+            session_list,
+            config_get,
+            config_save
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

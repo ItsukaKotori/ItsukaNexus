@@ -288,6 +288,7 @@ impl SessionManager {
                 Ok(Err(e)) => Some(format!("output task failed: {e}")),
                 Err(_) => {
                     cancel_w.cancel(); // 卡死的任务树自行收尾,只泄漏一个任务
+                    log::warn!("输出管线 join 超时 session={id},已取消任务树(stalled)");
                     Some("output pipeline stalled".into())
                 }
             };
@@ -454,9 +455,12 @@ impl SessionManager {
         }
         {
             // 上游 portable-pty 0.9 Windows 判定反转(ledger P6):
-            // kill 结果不可信,退出的真相以 wait 任务的 Exit 事件为准
+            // kill 结果不可信(Windows 上成功也报 Err),退出的真相以 wait
+            // 任务的 Exit 事件为准;这里只把失败记为告警,不改控制流
             let mut killer = handle.killer.lock().expect("killer 锁被毒化");
-            let _ = killer.kill();
+            if let Err(e) = killer.kill() {
+                log::warn!("kill 失败 session={id}: {e}");
+            }
         }
         // 令牌是给我们自己的任务树的:kill 后输出管线无需等 EOF
         // (孙进程持 slave fd 时 EOF 永不到来),协作取消、自行收尾
