@@ -42,8 +42,9 @@ const REPLAY_CAP: usize = 256 * 1024;
 const JOIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// 优雅关停宽限期:发 \x03 后等子进程自行退出的上限
 const GRACE_PERIOD: Duration = Duration::from_secs(2);
-/// \x03 写入超时(I1):PTY 输入缓冲满时 write_all 可无限期阻塞,
-/// 必须限时;写不进去 ≈ 进程不响应,超时直接落 kill 路径
+/// \x03 写入超时(I1):PTY 输入缓冲满时 write_all 可无限期阻塞,必须限时。
+/// 写超时不直接 kill,而是放弃这次写入、照常走宽限轮询:子进程若在写超时
+/// 窗口内自行退出则免杀更优;全程最坏 ~2s(写)+ ~2s(宽限)有界
 const CTRL_C_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 /// 优雅关停轮询间隔(状态迁移的真正通知由 wait 任务驱动,这里只是等它)
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
@@ -418,9 +419,11 @@ impl SessionManager {
 
         if !force {
             let writer = handle.writer.clone();
-            // \x03 写包超时(I1):缓冲满时 write_all 永久阻塞会击穿宽限设计;
-            // 超时视同宽限失败,直接落 kill 路径。被超时弃置的 spawn_blocking
-            // 线程随写入最终完成/失败自然收场(泄漏上限一个,进程退出兜底)
+            // \x03 写包超时(I1):缓冲满时 write_all 永久阻塞会击穿宽限设计。
+            // 写超时只是放弃这次写入,随后照常宽限轮询(最坏 ~2s 写 + ~2s
+            // 宽限有界,窗口内自行退出则免杀更优),仍未退才落 kill 路径。
+            // 被超时弃置的 spawn_blocking 线程随写入最终完成/失败自然收场
+            // (泄漏上限一个,进程退出兜底)
             let _ = tokio::time::timeout(
                 CTRL_C_WRITE_TIMEOUT,
                 tokio::task::spawn_blocking(move || {
