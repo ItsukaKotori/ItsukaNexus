@@ -4,6 +4,7 @@
 // 交互编码是 M2 议题),windows CI 覆盖靠 Task 2 的 pty_session 一次性测试。
 #![cfg(unix)]
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -228,4 +229,95 @@ async fn subscribe_replays_history_and_keeps_seq_monotonic() {
     if let Some(f) = tail.first() {
         assert!(f.seq >= last_before, "seq 必须跨订阅单调不回退");
     }
+}
+
+/// M2 完成标准②:慢消费者背压。订阅通道(SUBSCRIBER_DEPTH=128)不被消费
+/// → batcher 挂在 send → raw 通道(64×8KB)充满 → reader 的 blocking_send
+/// 阻塞 → PTY 缓冲顶住子进程:数据停滞但不丢、内存有界;恢复消费后全部行
+/// 完整到达。输出量必须超过订阅+raw 两条队列的总吸收量(≈4MB+512KB),否则
+/// 背压链根本不会传导——`seq 1 20000` 仅 ~110KB 会被订阅通道整体吸收,故用
+/// awk 在每行数字后垫一条 512B 的 x 行,把总量拉到 ~10MB。
+#[tokio::test]
+async fn slow_consumer_applies_backpressure_without_loss() {
+    let (mgr, mut sink_rx) = manager_with_channel();
+    let id = mgr.create("shell", 200, 50).await.expect("create 失败");
+    let sub = mgr.subscribe(id).expect("subscribe 失败");
+    let mut frames = sub.rx; // 持有而不消费:制造慢消费者
+
+    // 20000 行数字(断言对象)+ 每行一条 512B x 垫行 ≈ 10MB;首尾各补一条
+    // 空行:zsh 的 ZLE 重绘提示符(`%` + 右提示符填充空格)不带行尾换行,
+    // 会与紧随其后的第一行输出粘成一行,空行替数字行挡掉这种粘连;
+    // `</dev/null` 让 BEGIN-only 的 awk 不回头读 PTY stdin(否则会吞掉
+    // 后续输入并挂住)
+    mgr.send_input(
+        id,
+        "awk 'BEGIN{print \"\";p=\"x\";for(j=0;j<9;j++)p=p p;for(i=1;i<=20000;i++){print i;print p}} END{print \"\"}' </dev/null\n",
+    )
+    .await
+    .expect("send 失败");
+
+    // 暂停消费,等背压传导到位:订阅通道充满(batcher 挂在 send)是链路生效
+    // 的稳定标志——充满后恢复消费前不会排空(单调),轮询等待不引入 flake。
+    // 同一窗口并发验证 list() 不被慢消费者阻塞(M1 遗留 #5 的行为钉住:管理
+    // 面只碰快照表锁,不随输出管线一起排队)
+    let wait_stall = async {
+        let dl = tokio::time::Instant::now() + Duration::from_secs(30);
+        while frames.capacity() > 0 {
+            assert!(
+                tokio::time::Instant::now() < dl,
+                "30 秒内订阅通道未充满,背压链未生效(remaining={})",
+                frames.capacity()
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    };
+    let list_check = tokio::time::timeout(Duration::from_secs(2), async { mgr.list().len() });
+    let ((), list_res) = tokio::join!(wait_stall, list_check);
+    assert!(list_res.is_ok(), "list() 不得被慢消费者阻塞(2s 内未完成)");
+    assert_eq!(list_res.unwrap(), 1, "表中应恰有当前会话一条");
+
+    // 恢复消费:单次 500ms 超时循环,总量 deadline 30s(CI 慢时有余量);
+    // 凑满 20000 个数字行即提前收工。数字行升序、垫行为纯字母、噪声行
+    // (提示符/命令回显)不是纯数字行,不可能替我们补齐最后的缺号
+    let dl = tokio::time::Instant::now() + Duration::from_secs(30);
+    let mut collected = String::new();
+    let mut numbers: HashSet<u32> = HashSet::new();
+    while numbers.len() < 20000 && tokio::time::Instant::now() < dl {
+        match tokio::time::timeout(Duration::from_millis(500), frames.recv()).await {
+            Ok(Some(frame)) => {
+                collected.push_str(&frame.data);
+                // PTY 输出侧 OPOST/ONLCR 把 \n 变 \r\n:先剥 \r 再解析
+                for line in frame.data.split('\n') {
+                    if let Ok(n) = line.trim_end_matches('\r').parse::<u32>() {
+                        if (1..=20000).contains(&n) {
+                            numbers.insert(n);
+                        }
+                    }
+                }
+            }
+            Ok(None) => break, // 通道关闭(会话结束):转终断言
+            Err(_) => {}       // 500ms 无帧:复查完备性后继续等
+        }
+    }
+
+    // 完整性:拼接流按 '\n' 收进 HashSet,O(1) 存在性查找(禁 O(n²) contains);
+    // 行尾 \r 统一剥掉再比。提示符/回显噪声行不影响纯数字行的存在性断言
+    let lines: HashSet<&str> = collected
+        .split('\n')
+        .map(|l| l.trim_end_matches('\r'))
+        .collect();
+    let missing: Vec<u32> = (1..=20000)
+        .filter(|n| !lines.contains(n.to_string().as_str()))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "背压恢复后仍丢失 {} 行,例如 {:?}",
+        missing.len(),
+        &missing[..missing.len().min(10)]
+    );
+
+    // 收尾:强杀 + 等 Exit(防泄漏;强杀后 batcher 经 cancel 分支自行收尾)
+    mgr.stop(id, true).await.expect("stop 失败");
+    let code = wait_exit(&mut sink_rx, id).await;
+    assert_ne!(code, 0, "被强杀的 shell 退出码应非 0");
 }
