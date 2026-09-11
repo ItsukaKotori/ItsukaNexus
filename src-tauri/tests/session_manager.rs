@@ -236,7 +236,8 @@ async fn subscribe_replays_history_and_keeps_seq_monotonic() {
 /// 阻塞 → PTY 缓冲顶住子进程:数据停滞但不丢、内存有界;恢复消费后全部行
 /// 完整到达。输出量必须超过订阅+raw 两条队列的总吸收量(≈4MB+512KB),否则
 /// 背压链根本不会传导——`seq 1 20000` 仅 ~110KB 会被订阅通道整体吸收,故用
-/// awk 在每行数字后垫一条 512B 的 x 行,把总量拉到 ~10MB。
+/// awk 在每行数字后垫一条 512B 的 x 行,把总量拉到 ~10MB。失败上界最坏
+/// ~60s(wait_stall 30s + drain 30s),超出文件内 10s 惯例,为背压场景有意为之。
 #[tokio::test]
 async fn slow_consumer_applies_backpressure_without_loss() {
     let (mgr, mut sink_rx) = manager_with_channel();
@@ -257,9 +258,7 @@ async fn slow_consumer_applies_backpressure_without_loss() {
     .expect("send 失败");
 
     // 暂停消费,等背压传导到位:订阅通道充满(batcher 挂在 send)是链路生效
-    // 的稳定标志——充满后恢复消费前不会排空(单调),轮询等待不引入 flake。
-    // 同一窗口并发验证 list() 不被慢消费者阻塞(M1 遗留 #5 的行为钉住:管理
-    // 面只碰快照表锁,不随输出管线一起排队)
+    // 的稳定标志——充满后恢复消费前不会排空(单调),轮询等待不引入 flake
     let wait_stall = async {
         let dl = tokio::time::Instant::now() + Duration::from_secs(30);
         while frames.capacity() > 0 {
@@ -271,32 +270,34 @@ async fn slow_consumer_applies_backpressure_without_loss() {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     };
-    let list_check = tokio::time::timeout(Duration::from_secs(2), async { mgr.list().len() });
-    let ((), list_res) = tokio::join!(wait_stall, list_check);
+    wait_stall.await;
+    // 停滞窗口内(通道确定全满、恢复消费前)验证管理面不被阻塞(M1 遗留 #5
+    // 的行为钉住:管理面只碰快照表锁,不随输出管线一起排队)
+    let list_res = tokio::time::timeout(Duration::from_secs(2), async { mgr.list().len() }).await;
     assert!(list_res.is_ok(), "list() 不得被慢消费者阻塞(2s 内未完成)");
     assert_eq!(list_res.unwrap(), 1, "表中应恰有当前会话一条");
 
     // 恢复消费:单次 500ms 超时循环,总量 deadline 30s(CI 慢时有余量);
-    // 凑满 20000 个数字行即提前收工。数字行升序、垫行为纯字母、噪声行
-    // (提示符/命令回显)不是纯数字行,不可能替我们补齐最后的缺号
+    // 空闲节流(500ms 无帧)才对已拼接整体重扫判定完备、凑满 20000 提前收工
+    // ——数字行可能被 frame 边界切开,逐帧解析会永不满而空转到 deadline
     let dl = tokio::time::Instant::now() + Duration::from_secs(30);
     let mut collected = String::new();
-    let mut numbers: HashSet<u32> = HashSet::new();
-    while numbers.len() < 20000 && tokio::time::Instant::now() < dl {
+    while tokio::time::Instant::now() < dl {
         match tokio::time::timeout(Duration::from_millis(500), frames.recv()).await {
-            Ok(Some(frame)) => {
-                collected.push_str(&frame.data);
-                // PTY 输出侧 OPOST/ONLCR 把 \n 变 \r\n:先剥 \r 再解析
-                for line in frame.data.split('\n') {
-                    if let Ok(n) = line.trim_end_matches('\r').parse::<u32>() {
-                        if (1..=20000).contains(&n) {
-                            numbers.insert(n);
-                        }
-                    }
+            Ok(Some(frame)) => collected.push_str(&frame.data),
+            Ok(None) => break, // 通道关闭(会话结束):转终断言
+            Err(_) => {
+                // 对已拼接整体重扫(PTY 输出侧 \n→\r\n,先剥 \r 再解析)
+                let full: HashSet<u32> = collected
+                    .split('\n')
+                    .map(|l| l.trim_end_matches('\r'))
+                    .filter_map(|l| l.parse::<u32>().ok())
+                    .filter(|n| (1..=20000).contains(n))
+                    .collect();
+                if full.len() == 20000 {
+                    break;
                 }
             }
-            Ok(None) => break, // 通道关闭(会话结束):转终断言
-            Err(_) => {}       // 500ms 无帧:复查完备性后继续等
         }
     }
 
