@@ -87,7 +87,9 @@ async fn main() {
     for _ in 0..2 {
         got.push(rx.recv().await.unwrap());
     }
-    println!("consumed {:?}, pausing (producer must be parked on send #3)", got);
+    // 勘误(2026-09-10 审查实测):消费 2 条已释放 2 个 permit,暂停期内
+    // send(2)/send(3) 能完成;真正被背压挂起的是 send(4),直至 drain 恢复。
+    println!("consumed {:?}, pausing (producer parks on send #4)", got);
     tokio::time::sleep(Duration::from_millis(200)).await;
     while let Some(v) = rx.recv().await {
         got.push(v);
@@ -135,7 +137,7 @@ async fn main() {
 cd /Users/itsuka/CodeSpace/ItsukaNexus/src-tauri && cargo run --example tokio_basics
 ```
 
-Expected: produced 0..4 顺序输出、consumer 暂停期间无 produced #3(背压挂起)、tick ×2、cancelled、四概念 verified,正常退出。
+Expected: produced 0..4 顺序输出、consumer 暂停期间 produced 2/3 已入队(permit 已释放)、produced 4 被背压挂起至 drain 恢复(注:输出行序受调度竞态影响,tick 次数可能 2 或 3——断言只保证 got 全序与取消语义)、四概念 verified,正常退出。
 
 - [ ] **Step 4: 门槛 + 提交**
 
