@@ -10,8 +10,10 @@
 // reader 传导(M1 遗留 #2/#5 的最终解)。
 //
 // 锁序约定(全文件,防死锁):sessions 表锁 → (subscriber | replay | writer |
-// killer | master)句柄内锁;任何 std 锁都绝不跨越 .await / sink 回调
-// (需要跨点的值先 clone 出来再放锁)。
+// killer | master)句柄内锁;其中 subscriber→replay 必须按此序成对嵌套:batcher
+// 的 push+clone 与 subscribe 的 snapshot+替换都以订阅锁包住 replay 锁,两个临界
+// 段互斥即接缝原子化(I-1:replay 与实时流不重复不丢失)。任何 std 锁都绝不
+// 跨越 .await / sink 回调(需要跨点的值先 clone 出来再放锁)。
 use std::collections::HashMap;
 use std::io::Read;
 use std::sync::{Arc, Mutex};
@@ -245,10 +247,17 @@ impl SessionManager {
                     continue; // 本帧只是不完整的多字节尾部:扣留在 decoder 内
                 }
                 seq += 1;
-                replay_b.lock().expect("replay 锁").push_str(&text);
+                // 接缝原子化(I-1):持订阅锁的临界段内完成 replay push + 发送端
+                // 克隆,锁序 subscriber→replay,与 subscribe 的 snapshot+替换
+                // 互斥——帧要么只落 replay(成为下一订阅的快照),要么只走实时
+                // 流。锁不跨 await:clone 出发送端后放锁再慢递(订阅被替换时
+                // 旧克隆自然耗尽)
+                let tx = {
+                    let sub_guard = sub_b.lock().expect("订阅锁");
+                    replay_b.lock().expect("replay 锁").push_str(&text);
+                    sub_guard.clone()
+                };
                 let of = OutputFrame { seq, data: text };
-                // 锁不跨 await:把发送端克隆出来再慢递(订阅被替换时旧克隆自然耗尽)
-                let tx = sub_b.lock().expect("订阅锁").clone();
                 if let Some(tx) = tx {
                     // 订阅通道满 = 前端消费慢:在此挂起,背压经 raw 通道向 reader
                     // 传导。send 必须与 cancelled 竞争(I2):否则强杀后任务树被
@@ -336,14 +345,23 @@ impl SessionManager {
     /// 订阅会话输出:返回订阅前的历史回放 + 实时流接收端。
     /// 重复 subscribe 替换旧订阅(M1 遗留 #2):旧发送端 drop,旧接收端在
     /// 存量帧耗尽后收到关闭;seq 单会话单调,跨订阅不回退。
+    /// 接缝原子化(I-1):snapshot+替换与 batcher 的 push+clone 互斥(同锁序
+    /// subscriber→replay),replay 与实时流不重复不丢失。
     pub fn subscribe(&self, id: SessionId) -> Result<Subscription, NexusError> {
         let mut guard = self.inner.sessions.lock().expect("会话表锁被毒化");
         let handle = guard
             .get_mut(&id)
             .ok_or_else(|| NexusError::SessionNotFound(id.to_string()))?;
         let (tx, rx) = mpsc::channel(SUBSCRIBER_DEPTH);
-        *handle.subscriber.lock().expect("订阅锁") = Some(tx);
-        let replay = handle.replay.lock().expect("replay 锁").snapshot();
+        // 接缝原子化(I-1):持订阅锁期间完成 snapshot+替换(锁序 subscriber→
+        // replay),与 batcher 的 push+clone 临界段互斥——snapshot 只含已 push
+        // 的帧,替换后的新帧只走新通道,两种交错退化为二选一
+        let replay = {
+            let mut sub_guard = handle.subscriber.lock().expect("订阅锁");
+            let snap = handle.replay.lock().expect("replay 锁").snapshot();
+            *sub_guard = Some(tx);
+            snap
+        };
         Ok(Subscription { replay, rx })
     }
 
@@ -454,11 +472,14 @@ impl SessionManager {
             }
         }
         {
-            // 上游 portable-pty 0.9 Windows 判定反转(ledger P6):
-            // kill 结果不可信(Windows 上成功也报 Err),退出的真相以 wait
-            // 任务的 Exit 事件为准;这里只把失败记为告警,不改控制流
+            // 上游 portable-pty 0.9.0 WinChildKiller::kill 成败判定反转:Err 不
+            // 代表失败(成功也报 Err)。退出的真相以 wait 任务的 Exit 事件为准,
+            // 这里只记日志、不改控制流:Windows 侧降为 debug,unix 保留 warn
             let mut killer = handle.killer.lock().expect("killer 锁被毒化");
             if let Err(e) = killer.kill() {
+                #[cfg(windows)]
+                log::debug!("kill 返回 Err session={id}(Windows 判定反转,以 Exit 事件为真相): {e}");
+                #[cfg(not(windows))]
                 log::warn!("kill 失败 session={id}: {e}");
             }
         }

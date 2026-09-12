@@ -73,8 +73,8 @@ async fn session_create(
 /// 旧转发任务随旧接收端关闭自行结束。
 ///
 /// 前端契约(T8 依赖):
-/// - subscribe 接缝(replay 尾帧与实时流交接/重复 attach 替换)可能产生
-///   ≤1 帧重复,消费端须按 seq 去重;
+/// - 接缝原子化(I-1):replay 尾帧与实时流的交接、重复 attach 的替换都是
+///   互斥临界段,replay 与实时流不重复不丢失;
 /// - 会话退出后 rx 不会关闭(订阅发送端随条目常存,而条目永不删除),
 ///   流结束以 `session://exit` 事件为准,而非 Channel 关闭。
 #[tauri::command]
