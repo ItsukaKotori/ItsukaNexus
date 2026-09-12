@@ -1,10 +1,5 @@
-// 领域模块声明：命令变多后演进为 commands/ 目录。
-pub mod agent;
+// IPC 层:领域核心已拆至 nexus-core crate,这里只留展示/命令薄层。
 pub mod app;
-pub mod config;
-pub mod error;
-pub mod ids;
-pub mod pty;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -12,10 +7,11 @@ use std::sync::Arc;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use agent::manager::{SessionEvent, SessionManager, Subscription};
-use agent::state::{SessionSnapshot, SessionState};
-use config::model::AppConfig;
-use ids::SessionId;
+use nexus_core::agent::manager::{SessionEvent, SessionManager, Subscription};
+use nexus_core::agent::state::{SessionSnapshot, SessionState};
+use nexus_core::config;
+use nexus_core::config::model::AppConfig;
+use nexus_core::ids::SessionId;
 
 // ---------- app_info(M0)----------
 
@@ -157,9 +153,7 @@ async fn session_list(state: State<'_, SessionManager>) -> Result<Vec<SessionSna
 }
 
 fn parse_id(s: String) -> Result<SessionId, String> {
-    s.parse::<uuid::Uuid>()
-        .map(SessionId::from)
-        .map_err(|e| format!("非法 session id {s:?}: {e}"))
+    s.parse::<SessionId>()
 }
 
 // ---------- config_*(M2)----------

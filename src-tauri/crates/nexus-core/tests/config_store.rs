@@ -4,8 +4,8 @@
 use std::fs;
 use std::path::PathBuf;
 
-use itsukanexus_lib::config::model::{AgentProfile, AppConfig};
-use itsukanexus_lib::config::{default_config, store};
+use nexus_core::config::model::{AgentProfile, AppConfig};
+use nexus_core::config::{default_config, store};
 
 /// 唯一临时目录:temp_dir/itsukanexus-test-<uuid>,已创建。
 fn temp_dir() -> PathBuf {
@@ -29,10 +29,7 @@ fn empty_dir_load_or_create_returns_default_and_writes_file() {
     let shell = &cfg.agent_profiles[0];
     assert_eq!(shell.id, "shell");
     assert_eq!(shell.display_name, "Shell");
-    assert_eq!(
-        shell.command,
-        itsukanexus_lib::agent::manager::default_shell()
-    );
+    assert_eq!(shell.command, nexus_core::agent::manager::default_shell());
     assert!(shell.args_template.is_empty());
     assert!(shell.env.is_empty());
 

@@ -31,3 +31,12 @@ impl From<uuid::Uuid> for SessionId {
         Self(u)
     }
 }
+
+impl std::str::FromStr for SessionId {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        uuid::Uuid::parse_str(s)
+            .map(SessionId)
+            .map_err(|e| format!("非法 session id {s:?}: {e}"))
+    }
+}

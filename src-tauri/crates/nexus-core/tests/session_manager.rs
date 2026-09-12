@@ -9,10 +9,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use itsukanexus_lib::agent::manager::{OutputFrame, SessionEvent, SessionManager, Subscription};
-use itsukanexus_lib::agent::state::SessionState;
-use itsukanexus_lib::error::NexusError;
-use itsukanexus_lib::ids::SessionId;
+use nexus_core::agent::manager::{OutputFrame, SessionEvent, SessionManager, Subscription};
+use nexus_core::agent::state::SessionState;
+use nexus_core::error::NexusError;
+use nexus_core::ids::SessionId;
 
 /// 单条测试的整体 deadline:真实 spawn shell,就绪时间不定,超时即失败
 const TEST_TIMEOUT: Duration = Duration::from_secs(10);

@@ -1,0 +1,14 @@
+[package]
+name = "nexus-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+portable-pty = "0.9"
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+thiserror = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"

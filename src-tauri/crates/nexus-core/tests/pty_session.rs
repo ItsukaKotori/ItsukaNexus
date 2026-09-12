@@ -9,7 +9,7 @@
 use std::io::Read;
 use std::time::Duration;
 
-use itsukanexus_lib::pty::session::PtySession;
+use nexus_core::pty::session::PtySession;
 
 /// 有界读取:阻塞 read 在辅助线程进行(泄漏随测试进程退出,可接受),
 /// 测试线程只做 recv_timeout。超时时 panic 并带上已收到的内容,便于 CI 诊断。
