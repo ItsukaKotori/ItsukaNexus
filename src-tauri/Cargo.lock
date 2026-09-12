@@ -2212,11 +2212,13 @@ checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 name = "nexus-core"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "libc",
  "log",
  "portable-pty",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",

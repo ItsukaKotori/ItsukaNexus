@@ -15,4 +15,13 @@ pub enum NexusError {
     /// provider_id 不被支持(M1 只认 "shell")
     #[error("不支持的 provider: {0}")]
     UnsupportedProvider(String),
+    /// 系统无 git 或版本低到不可用(check 已探测,功能入口应先 gate)
+    #[error("git 不可用: {0}")]
+    GitUnavailable(String),
+    /// 给定路径不是 git 仓库(rev-parse 失败)
+    #[error("不是 git 仓库: {0}")]
+    NotARepo(String),
+    /// git 命令执行失败(stderr 透传给 UI)
+    #[error("git {cmd} 失败: {stderr}")]
+    GitCommand { cmd: String, stderr: String },
 }

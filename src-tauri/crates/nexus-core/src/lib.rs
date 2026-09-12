@@ -3,6 +3,7 @@
 pub mod agent;
 pub mod config;
 pub mod error;
+pub mod gitx;
 pub mod ids;
 pub mod pty;
 
