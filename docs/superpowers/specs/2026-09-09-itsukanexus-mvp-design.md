@@ -1,6 +1,6 @@
 # ItsukaNexus MVP 实现架构设计
 
-> 版本：v1.0（2026-09-09）
+> 版本：v1.1（2026-09-12，M3 细化修订：进程组 kill 序列、session_dispose 会话回收、事件载荷 camelCase 对齐、UI 库选型 shadcn/ui + Tailwind）
 > 状态：已批准
 > 参考：[stablyai/orca](https://github.com/stablyai/orca)（形态参考：多 CLI agent 并行编排 + 每 agent 独立 worktree；其前端用 Angular，我们用 React）
 > 约束：开发者本人是 Rust 新手，本设计同时是一份 Rust 学习路径。技术栈（Tauri 2 + React TS + Rust 全量核心逻辑）已锁定，本文为细化设计。
@@ -43,6 +43,8 @@ ItsukaNexus/
 │   ├── App.tsx
 │   ├── app/
 │   │   └── AppShell.tsx            # 整体布局：左栏 + 主区 + 底部状态条
+│   ├── components/
+│   │   └── ui/                     # shadcn/ui 组件（源码进仓库，M3 起）
 │   ├── ipc/
 │   │   ├── types.ts                # 与 Rust 侧对齐的 TS 类型（SessionSnapshot/PtyChunk/...）
 │   │   ├── commands.ts             # 所有 invoke 的类型安全封装（唯一入口）
@@ -127,6 +129,7 @@ ItsukaNexus/
 - env 注入：`TERM=xterm-256color`、`COLORTERM=truecolor`，保证 Claude Code 等 TUI agent 在 ConPTY 下正确渲染颜色。
 - **背压链（关键设计）**：reader 线程 → **有界** tokio mpsc（容量 64 条消息）→ batcher 任务（8–16ms 时间窗或 32KB 大小上限合为一帧）→ `Channel.send`。队列满时 reader 线程 `await` 在 send 上 → PTY 内核缓冲涨 → 子进程 write 阻塞 → agent 自然减速。终端字节流不可丢帧（会撕裂转义序列），所以用"有界通道 + 阻塞"而非"丢弃"。
 - **replay buffer**：每会话保留最近 256KB 输出的 ring buffer，`session_attach` 时先重放，前端热重载/崩溃后终端不丢上下文。
+- **kill 序列（M3）**：force stop = Unix `killpg(pgid, SIGKILL)`（子进程开 controlling terminal 即 session leader，pgid = pid，杀 shell 组）+ **drop master**（内核向前台进程组发 SIGHUP——覆盖"kill 正忙 shell"场景）→ slave 全关 → reader EOF；Windows 维持 killer + Exit 事件为真相 + join 超时兜底（ConPTY 无进程组概念，孙进程为已知局限，文档说明）。
 
 **agent::AgentSession**（编排的最小单元）
 - 组合一个 `PtySession` + 会话状态机 + 可选的 worktree 绑定，持有 `CancellationToken`。
@@ -136,6 +139,7 @@ ItsukaNexus/
 **agent::SessionManager**
 - `RwLock<HashMap<SessionId, SessionHandle>>`；`SessionHandle` 是瘦句柄（快照 + 命令通道），不是共享可变大对象——读写锁只保护注册表，会话内部状态由会话自己的任务独占（actor 风格，避免锁粒度地狱）。
 - 提供 `launch_fleet(repo, provider, n, base)`：原子地"创建 N 个 worktree + N 个会话"，任一步失败则回滚已建部分。
+- **会话回收（M3）**：终态（Exited/Failed）条目"关 tab 即删"——`session_dispose` 命令 drop 条目（replay/订阅/句柄/取消令牌全释放），运行中会话调用返回错误；终态时自动置空 subscriber 终结常驻转发任务；`list()` 按 startedAtMs 排序（刷新后 tab 序稳定）。
 
 **agent::SessionState（状态机，Rust enum 为唯一权威）**
 
@@ -181,6 +185,7 @@ Created ──start()──> Running ──user/orchestrator stop──> Stoppin
 | `session_resize` | `{ session_id, cols, rows }` | – | M1 |
 | `session_stop` | `{ session_id, force }` | – | M1 |
 | `session_list` | – | `Vec<SessionSnapshot>` | M2 |
+| `session_dispose` | `{ session_id }` | – | M3（仅终态可删；"关 tab 即删"语义） |
 | `provider_list` | – | `Vec<ProviderInfo>` | M4 |
 | `config_get` / `config_save` | – / `{ config }` | `AppConfig` / – | M2 |
 
@@ -190,16 +195,16 @@ Created ──start()──> Running ──user/orchestrator stop──> Stoppin
 
 | 事件 | 载荷 | 说明 | 引入 |
 |---|---|---|---|
-| `session://state` | `{ session_id, prev, next, at, detail? }` | 状态机迁移；侧边栏徽章实时刷新 | M2 |
-| `session://exit` | `{ session_id, code }` | 可并入 state，但独立出来便于前端弱网去重 | M2 |
-| `worktree://changed` | `{ repo_path, change }` | Created/Removed/Merged，多面板联动 | M3 |
+| `session://state` | `{ sessionId, prev, next, atMs, detail? }` | 状态机迁移；侧边栏徽章实时刷新 | M2 |
+| `session://exit` | `{ sessionId, code }` | 可并入 state，但独立出来便于前端弱网去重 | M2 |
+| `worktree://changed` | `{ repoPath, change }` | Created/Removed/Merged，多面板联动 | M3 |
 | `app://error` | `{ source, message, recoverable }` | 全局 toast | M4 |
 
 **Channel（高频流，per-session，非广播）**：
 
 | 流 | 载荷 | 说明 |
 |---|---|---|
-| `session_attach` 的 `output` | `PtyChunk { session_id, data: String, seq, truncated? }` | `data` 已在 Rust 侧经**增量 UTF-8 解码**（`pty/decode.rs` 保存跨 chunk 的不完整多字节尾部），前端 `term.write()` 前无需再处理编码 |
+| `session_attach` 的 `output` | `PtyChunk { sessionId, data: String, seq }` | `data` 已在 Rust 侧经**增量 UTF-8 解码**（`pty/decode.rs` 保存跨 chunk 的不完整多字节尾部），前端 `term.write()` 前无需再处理编码 |
 
 为什么输出不用全局 emit：① emit 是广播，每帧 JSON 序列化发给所有监听者，`cat` 大文件时开销放大 N 倍；② Channel 绑定单个会话，前端订阅生命周期与 React 组件对齐；③ 官方明确 Channel 为流式场景设计。折中代价是"切 tab 重连"需要 replay，由 ring buffer 解决。
 
@@ -208,6 +213,7 @@ Created ──start()──> Running ──user/orchestrator stop──> Stoppin
 ### 1.5 React 前端结构与 xterm.js 集成
 
 - **技术**：React 19 + Vite + TypeScript；`@xterm/xterm` + `@xterm/addon-fit` + `@xterm/addon-web-links`（xterm.js 5.x 起包名迁到 `@xterm` scope）+ `@xterm/addon-webgl`（大输出时的渲染加速，作为渐进增强，失败自动回退 DOM renderer）。
+- **UI 组件（M3 起）**：**shadcn/ui + Tailwind v4**——组件源码进仓库、无运行时框架锁定，暗色紧凑风贴桌面终端工具；M3 接入时一并移植 M0–M2 的手写 UI（AppShell/tab 栏/pane 遮罩），此后仓库保持单一风格体系。xterm 容器不受影响（自管 DOM）。
 - **状态管理**：zustand。会话表是"一个集合 + 多处派生视图（侧边栏/tab/详情面板）"的典型全局单 store 场景，zustand 的 selector + 浅比较天然匹配且学习成本一晚上。
 - **xterm 实例管理（关键决策）**：`terminalManager.ts` 是 React 树之外的普通 TS 模块，持有 `Map<sessionId, Terminal>`。**每个会话的 Terminal 实例常驻**（切换 tab 用 CSS 隐藏/显示），避免卸载重建丢失 scrollback 与 TUI 状态；React 只通过 store 订阅"哪些会话存在"，绝不把输出数据放进 React state（输出直达 `term.write`，绕过 React 渲染管线——这是性能红线）。
 - **数据接入**：`useTerminalSession(sessionId)` hook 负责 `new Channel<PtyChunk>()` → `session_attach` → `onmessage` 里 `term.write(chunk.data)`；`term.onData` → `session_send_input`；`ResizeObserver` + fit addon → `session_resize`（防抖 100ms）。
@@ -277,7 +283,7 @@ commands::session::send_input ──> SessionManager 查句柄 ──> PtyWriter
 
 | 项 | 内容 |
 |---|---|
-| 交付物 | cargo workspace 拆分（`nexus-core` 脱离 tauri，模块机械搬运）；GitOps：`git_check`（启动检测）、`git_validate_repo`、worktree create/list/remove；RepoPicker（tauri-plugin-dialog）；`session_create` 支持 `repo_path + worktree`，终端 cwd 落在 worktree；关会话可选清理 worktree；`worktree://changed` 联动 |
+| 交付物 | cargo workspace 拆分（`nexus-core` 脱离 tauri，模块机械搬运）；GitOps：`git_check`（启动检测）、`git_validate_repo`、worktree create/list/remove；RepoPicker（tauri-plugin-dialog）；`session_create` 支持 `repo_path + worktree`，终端 cwd 落在 worktree；关会话可选清理 worktree；`worktree://changed` 联动；前端基建 shadcn/ui + Tailwind v4（含 M2 手写 UI 移植）。**M2 终审遗留必办**：Unix 进程组 kill（killpg + drop master，见 §1.3）、会话回收（`session_dispose` 关 tab 即删 + 终态断订阅）、`list()` 排序、`send_input` 写超时、config 三项加固（读错误不覆盖写/入参 clamp/命令 async 化）、终端退出视觉反馈 |
 | Rust 学习主题 | cargo workspace/lib vs bin/path 依赖；`tokio::process::Command` + 管道 stdout/stderr；porcelain 输出解析——字符串处理纪律；`Path`/`PathBuf`/canonicalize 与 Windows 路径陷阱；**trait 正式入门**：定义 `GitOps` trait 只有一个 `GitCliOps` 实现；newtype ID（`SessionId(uuid)`、`WorktreeName(String)`）防字符串滥用；集成测试：`tempfile` 建临时 repo → worktree 全流程断言 |
 | 关键技术 | tokio::process、tauri-plugin-dialog、tauri-plugin-opener |
 | 完成标准（验证） | ① UI：选 repo → 创建 worktree → 打开终端 `pwd` 显示 worktree 路径；② 在 worktree 里 `git status`/commit 正常，外部 `git worktree list` 一致；③ 关闭会话勾选清理后分支与目录均消失；④ 系统无 git 时启动给引导提示而非 panic；⑤ `cargo test -p nexus-core` 在临时 repo 上跑通 worktree 增删查集成测试；⑥ Windows 含空格/中文路径的 repo 正常 |
@@ -314,6 +320,7 @@ commands::session::send_input ──> SessionManager 查句柄 ──> PtyWriter
 | 前端框架 | **React 19 + Vite + TS** | 已锁定；Vite 是 Tauri 官方模板默认 | – |
 | 终端组件 | **@xterm/xterm + addon-fit + addon-web-links + addon-webgl（渐进增强）** | xterm.js 5.x 官方包名（`@xterm` scope），VS Code 同源 | tmux 嵌入/web terminal 自绘（工作量不可控） |
 | 前端状态 | **zustand** | 单 store + selector 与"会话表 + 多派生视图"天然匹配，学习成本一晚上 | jotai（原子化适合表单密集场景）；Redux Toolkit（仪式感过重）；无库（prop drilling 到 M4 必炸） |
+| UI 组件库 | **shadcn/ui + Tailwind v4**（M3 起） | 组件源码进仓库可控可改、无运行时框架锁定、暗色桌面风贴终端工具，Tauri 社区常用 | Ant Design（组件全、中文文档佳，但包体大、默认风格偏管理后台）；纯手写 CSS（M0–M2 方案，M4 表单/toast 密集后成本上升） |
 | 配置存储 | **手写 serde_json + 原子写（tmp+rename）** | 学习价值（serde 建模、路径 API、原子性思维）且 AgentProfile 结构复杂度高；就一个 JSON 文件，插件黑盒反而碍事 | tauri-plugin-store（封装了学习点，且 watcher/迁移能力暂不需要）——若未来配置膨胀再迁 |
 | Tauri 2 插件（MVP 应上） | M2：**tauri-plugin-log**；M3：**tauri-plugin-dialog** + **tauri-plugin-opener**；M5：**tauri-plugin-window-state**（+可选 single-instance） | 全部官方维护、各自解决一个真实需求 | updater/process 插件推迟到 MVP 后发布阶段 |
 
