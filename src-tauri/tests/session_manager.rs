@@ -5,10 +5,11 @@
 #![cfg(unix)]
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use itsukanexus_lib::agent::manager::{OutputFrame, SessionEvent, SessionManager};
+use itsukanexus_lib::agent::manager::{OutputFrame, SessionEvent, SessionManager, Subscription};
 use itsukanexus_lib::agent::state::SessionState;
 use itsukanexus_lib::error::NexusError;
 use itsukanexus_lib::ids::SessionId;
@@ -321,4 +322,174 @@ async fn slow_consumer_applies_backpressure_without_loss() {
     mgr.stop(id, true).await.expect("stop 失败");
     let code = wait_exit(&mut sink_rx, id).await;
     assert_ne!(code, 0, "被强杀的 shell 退出码应非 0");
+}
+
+/// I-1 钉住测试:replay/live 接缝原子化(replay 与实时流不重复不丢失)。
+/// 定位是概率性回归绊线,不是确定性复现:单次 subscribe 的交错窗口小,机制
+/// 正确性由终审的交错代数证明(batcher 的 push+clone 与 subscribe 的
+/// snapshot+替换以 subscriber→replay 锁序配对成互斥临界段后,接缝退化为
+/// 二选一);这里靠 4 路 × 300 次重订阅在帧级接缝上反复踩线,"重复帧出现即红"。
+/// 必须多线程 runtime:交错需要真并行(生产侧 tauri 是多线程 runtime),
+/// 单线程 runtime 里同步临界段互不穿插,踩不到接缝竞态。数据量为 300 万行
+/// 唯一 marker(~36MB):喂饱整条管线让 batcher 在整个重订阅窗口持续出帧,
+/// 并把 replay 顶到 256KB 上限。最坏耗时 ~35s(流动监督 20s 上限 + 1s 空闲
+/// 判定 + 收尾自然退出 10s 上限),典型 ~5-8s。
+/// 收尾用自然退出而非强杀:上游 clone_killer 只发 SIGHUP(无 SIGKILL 兜底),
+/// 前台作业运行中的正忙 shell 不理会,stop 后 Exit 永不到达、状态卡 Stopping
+/// ——main 上的既有问题,归 M3 进程组 kill;本测试等流停(shell 回到空闲
+/// 提示符)再送 exit 避开。
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn attach_seam_never_duplicates() {
+    const HAMMERS: usize = 4;
+    const RESUBSCRIBES: usize = 300;
+
+    let (mgr, mut rx) = manager_with_channel();
+    let mgr = Arc::new(mgr);
+    let id = mgr.create("shell", 200, 50).await.expect("create 失败");
+
+    // 300 万行唯一 marker(~36MB):喂饱整条管线,让 batcher 在整个重订阅
+    // 窗口内持续出帧,并把 replay 顶到 256KB 上限;`</dev/null` 防
+    // BEGIN-only awk 回读 PTY stdin 挂住(同背压测试)
+    mgr.send_input(
+        id,
+        "awk 'BEGIN{for(i=1;i<=3000000;i++)print \"SEAM-\" i}' </dev/null\n",
+    )
+    .await
+    .expect("send 失败");
+
+    // 等输出真正开始流动(shell 启动时间不计入重订阅窗口;严格整行匹配
+    // marker,命令回显里的 awk 源码文本不算数)
+    'flow: {
+        let first = mgr.subscribe(id).expect("subscribe 失败");
+        let mut first_rx = first.rx;
+        let dl = deadline();
+        while tokio::time::Instant::now() < dl {
+            let now = tokio::time::Instant::now();
+            let frame = tokio::time::timeout(dl - now, first_rx.recv())
+                .await
+                .expect("10 秒内未等到首帧输出")
+                .expect("订阅通道意外关闭");
+            if frame.data.split('\n').any(|l| {
+                l.trim_end_matches('\r')
+                    .strip_prefix("SEAM-")
+                    .is_some_and(|r| r.parse::<u64>().is_ok())
+            }) {
+                break 'flow;
+            }
+        }
+        panic!("10 秒内未等到首个 marker 行");
+    }
+
+    // 流结束旗标(监督任务):已见帧且计数 1s 无增长 = awk 退场、shell 回到
+    // 空闲提示符,此时才可安全送 exit 自然退出(见函数头注释);20s 硬上限兜底
+    let frames_seen = Arc::new(AtomicU64::new(0));
+    let flow_done = Arc::new(AtomicBool::new(false));
+    {
+        let frames_seen = Arc::clone(&frames_seen);
+        let flow_done = Arc::clone(&flow_done);
+        tokio::task::spawn(async move {
+            let dl = tokio::time::Instant::now() + Duration::from_secs(20);
+            let mut last = 0u64;
+            let mut idle_ticks = 0u32;
+            while tokio::time::Instant::now() < dl {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                let now = frames_seen.load(Ordering::Relaxed);
+                if now == 0 {
+                    continue; // 还没开始流动
+                }
+                if now == last {
+                    idle_ticks += 1;
+                    if idle_ticks >= 10 {
+                        break; // 1s 无新帧:流结束
+                    }
+                } else {
+                    idle_ticks = 0;
+                    last = now;
+                }
+            }
+            flow_done.store(true, Ordering::Relaxed);
+        });
+    }
+
+    // 重订阅 hammer × HAMMERS:每路 RESUBSCRIBES 次"订阅 → 30ms 内收 1 帧实时
+    // → 就地丢弃 → replay+live 拼接查重"。消费速率天然被生产速率限流,recv
+    // 等帧的时间正是 batcher 出帧(=接缝)的时间;多路并发互相替换订阅,
+    // 接缝密度被反复踩
+    let mut hammers = Vec::new();
+    for hammer in 0..HAMMERS {
+        let mgr = Arc::clone(&mgr);
+        let frames_seen = Arc::clone(&frames_seen);
+        hammers.push(tokio::spawn(async move {
+            for iter in 0..RESUBSCRIBES {
+                let Subscription {
+                    replay,
+                    rx: mut sub_rx,
+                } = mgr.subscribe(id).expect("subscribe 失败");
+                // 首批实时帧:收 1 帧即可判定接缝,至多等 30ms(空闲兜底)
+                let mut live = String::new();
+                if let Ok(Some(frame)) =
+                    tokio::time::timeout(Duration::from_millis(30), sub_rx.recv()).await
+                {
+                    live.push_str(&frame.data);
+                    frames_seen.fetch_add(1, Ordering::Relaxed);
+                }
+                drop(sub_rx); // 旧订阅就地丢弃:下一轮替换语义与真实前端一致
+
+                let joined = format!("{replay}{live}");
+                // 只比对完整行:帧界落在任意字节,replay 尾/live 尾都可能停在
+                // 某行中间,半截数字("SEAM-5876" 被切成 "SEAM-58")会假阳性
+                // 命中更早的真实行号,截到最后一个 '\n' 消除;真接缝重复是
+                // 完整行在拼接里出现两次,不受截断影响。严格整行匹配下,命令
+                // 回显/提示符噪声行(含 awk 源码)不会命中;帧界切开处由拼接
+                // 顺序自然还原
+                let complete = match joined.rfind('\n') {
+                    Some(i) => &joined[..=i],
+                    None => "",
+                };
+                let mut seen = HashSet::new();
+                let mut dups = Vec::new();
+                for line in complete.split('\n').map(|l| l.trim_end_matches('\r')) {
+                    let Some(n) = line
+                        .strip_prefix("SEAM-")
+                        .and_then(|r| r.parse::<u64>().ok())
+                    else {
+                        continue;
+                    };
+                    if !seen.insert(n) {
+                        dups.push(n);
+                    }
+                }
+                if !dups.is_empty() {
+                    return Err(format!(
+                        "hammer {hammer} 第 {iter} 次订阅:replay+live 拼接出现重复帧\
+                         (接缝必须原子化,不重复不丢失): {:?}",
+                        &dups[..dups.len().min(8)]
+                    ));
+                }
+            }
+            Ok(())
+        }));
+    }
+    for hammer in hammers {
+        hammer
+            .await
+            .expect("重订阅任务失败")
+            .expect("接缝检出重复帧");
+    }
+
+    // 等流动结束确认(hammer 收满 300 次时流可能尚有余量;上限兜底)
+    let dl = tokio::time::Instant::now() + Duration::from_secs(25);
+    while !flow_done.load(Ordering::Relaxed) {
+        assert!(
+            tokio::time::Instant::now() < dl,
+            "25 秒内输出流未结束,无法安全收尾"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // 收尾:自然退出(见函数头注释,SIGHUP 对正忙 shell 不足归 M3),等 Exit
+    // 并断言退出码 0,防会话/任务树泄漏
+    mgr.send_input(id, "exit\n").await.expect("send 失败");
+    let code = wait_exit(&mut rx, id).await;
+    assert_eq!(code, 0, "自然退出的 shell 退出码应为 0");
 }

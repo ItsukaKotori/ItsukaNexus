@@ -39,6 +39,8 @@ export const useSessions = create<SessionsState>((set) => ({
     set((st) => {
       const cur = st.sessions[sessionId];
       if (!cur) return st;
+      // 终态吸收:Exited/Failed 后不再接受状态更新(镜像后端 can_transition_to)
+      if (cur.state === "exited" || cur.state === "failed") return st;
       return { sessions: { ...st.sessions, [sessionId]: { ...cur, state: next } } };
     }),
   onExit: (ev) =>
