@@ -42,9 +42,6 @@ impl PtySession {
     /// spawn 一个跑在 PTY 里的进程。
     /// 返回 (会话句柄, child):child 必须立刻交给专属任务调 wait(),
     /// 否则进程退出后无人收割(Windows 上即"僵尸句柄",spec M1 完成标准③)。
-    /// spawn 一个跑在 PTY 里的进程。
-    /// 返回 (会话句柄, child):child 必须立刻交给专属任务调 wait(),
-    /// 否则进程退出后无人收割(Windows 上即"僵尸句柄",spec M1 完成标准③)。
     /// cwd = None 时继承本进程工作目录(M2 行为);Some 则作为子进程的
     /// 工作目录(worktree 集成点,spec §1.4 session_create 的落点)。
     pub fn spawn(

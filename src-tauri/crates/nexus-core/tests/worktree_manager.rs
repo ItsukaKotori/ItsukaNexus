@@ -1,33 +1,17 @@
 // WorktreeManager 全流程:真实 git(CI 三平台预装)。
 // 覆盖完成标准⑥:含空格/中文的 repo 路径。
-use std::path::Path;
+mod common;
+
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use common::init_repo_at;
 use nexus_core::error::NexusError;
 use nexus_core::gitx::cli::GitCliOps;
 // 走 manager 编排,测试内不直接调 GitOps trait 方法(trait 无需导入)
 use nexus_core::gitx::worktree::{WorktreeChange, WorktreeManager};
 use nexus_core::ids::WorktreeName;
-
-fn init_repo_at(dir: &Path) {
-    let run = |args: &[&str]| {
-        let st = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(args)
-            .status()
-            .unwrap();
-        assert!(st.success(), "git {args:?} 失败");
-    };
-    run(&["init", "-q"]);
-    run(&["config", "user.email", "test@nx.local"]);
-    run(&["config", "user.name", "nx-test"]);
-    std::fs::write(dir.join("README.md"), "# t\n").unwrap();
-    run(&["add", "."]);
-    run(&["commit", "-qm", "init"]);
-}
 
 fn manager_with_events() -> (WorktreeManager, Arc<Mutex<Vec<WorktreeChange>>>) {
     let seen = Arc::new(Mutex::new(Vec::new()));
