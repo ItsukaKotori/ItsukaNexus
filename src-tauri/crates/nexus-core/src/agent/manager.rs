@@ -135,7 +135,7 @@ impl Inner {
         let prev = {
             let mut guard = self.sessions.lock().expect("会话表锁被毒化");
             let Some(handle) = guard.get_mut(&id) else {
-                return; // 条目已不在:无从谈起状态(M2 条目永不删除,防御性分支)
+                return; // 条目已不在:无从谈起状态(M2-M3:条目保留至 dispose,防御性分支)
             };
             let prev = handle.snapshot.state;
             if !prev.can_transition_to(next) {
@@ -486,7 +486,8 @@ impl SessionManager {
 
     /// 停止会话。force=true 直接 kill;false 先发 \x03(Ctrl-C 字节进 PTY,是给
     /// 子进程的信号)、宽限 2s 等它自行退出、超时再 kill。
-    /// 条目永不删除:退出后仍在表里,状态 Exited/Failed(风险 #6 的最终解)。
+    /// 退出后条目保留(状态 Exited/Failed),直至前端关 tab 调 dispose 显式回收
+    /// (风险 #6 的最终解 + M3 会话回收)。
     pub async fn stop(&self, id: SessionId, force: bool) -> Result<(), NexusError> {
         let handle = {
             self.inner

@@ -95,8 +95,8 @@ pub async fn session_create(
 /// 前端契约(T8 依赖):
 /// - 接缝原子化(I-1):replay 尾帧与实时流的交接、重复 attach 的替换都是
 ///   互斥临界段,replay 与实时流不重复不丢失;
-/// - 会话退出后 rx 不会关闭(订阅发送端随条目常存,而条目永不删除),
-///   流结束以 `session://exit` 事件为准,而非 Channel 关闭。
+/// - 会话退出后订阅发送端被置空、转发任务随之结束;终态下 attach 返回
+///   replay + 已关闭流。流结束仍以 `session://exit` 事件为权威信号。
 #[tauri::command]
 pub async fn session_attach(
     state: State<'_, SessionManager>,
@@ -128,7 +128,7 @@ pub async fn session_attach(
                 break; // 前端 Channel 失效(webview 重载):转发任务自行收尾
             }
         }
-        // recv() 返回 None 仅当订阅被替换(旧发送端 drop),并非会话退出;
+        // recv() 返回 None = 订阅被替换或会话终态断订阅;
         // 流结束以 Exit 事件为准(见命令 doc 注释)
     });
     Ok(AttachAck {
