@@ -88,7 +88,8 @@ pub struct Subscription {
 struct SessionHandle {
     writer: Arc<Mutex<Box<dyn std::io::Write + Send>>>,
     killer: Arc<Mutex<Box<dyn ChildKiller + Send + Sync>>>,
-    master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
+    /// None = master 已被 stop 的进程组 kill 消费(drop → 内核向前台组投 SIGHUP)
+    master: Arc<Mutex<Option<Box<dyn MasterPty + Send>>>>,
     snapshot: SessionSnapshot,
     replay: Arc<Mutex<ReplayBuffer>>,
     /// 当前订阅发送端;None = 无人订阅(replay 照常积累)
@@ -407,14 +408,16 @@ impl SessionManager {
         let master = master
             .lock()
             .map_err(|e| NexusError::Pty(std::io::Error::other(format!("master 被毒化: {e}"))))?;
-        master
-            .resize(PtySize {
+        // master 已被 stop 消费(None):会话必死,resize 无意义,静默成功
+        if let Some(m) = master.as_ref() {
+            m.resize(PtySize {
                 rows,
                 cols,
                 pixel_width: 0,
                 pixel_height: 0,
             })
             .map_err(pty_err)?;
+        }
         Ok(())
     }
 
@@ -472,9 +475,18 @@ impl SessionManager {
             }
         }
         {
-            // 上游 portable-pty 0.9.0 WinChildKiller::kill 成败判定反转:Err 不
-            // 代表失败(成功也报 Err)。退出的真相以 wait 任务的 Exit 事件为准,
-            // 这里只记日志、不改控制流:Windows 侧降为 debug,unix 保留 warn
+            // Unix 进程组语义(M3 必办#1):子进程开 controlling terminal 即
+            // session leader(pgid == pid),killpg 一次杀掉 shell 组;
+            // 前台 busy job 在另一进程组——由 drop master 触发内核 SIGHUP。
+            #[cfg(unix)]
+            if let Some(pid) = handle.snapshot.pid {
+                // ESRCH(组已死)等 errno 一概忽略:退出真相以 Exit 事件为准
+                unsafe {
+                    libc::killpg(pid as libc::pid_t, libc::SIGKILL);
+                }
+            }
+            // 上游 portable-pty 0.9.0 WinChildKiller::kill 成败判定反转:
+            // Err 不代表失败。Windows 主路径;Unix 兜底(killpg 之外的保险)
             let mut killer = handle.killer.lock().expect("killer 锁被毒化");
             if let Err(e) = killer.kill() {
                 #[cfg(windows)]
@@ -483,8 +495,10 @@ impl SessionManager {
                 log::warn!("kill 失败 session={id}: {e}");
             }
         }
+        // drop master:内核向前台进程组发 SIGHUP(kill 正忙 shell 的关键一击),
+        // slave 全关 → reader EOF;master 已被消费(None)则无事发生
+        drop(handle.master.lock().expect("master 锁被毒化").take());
         // 令牌是给我们自己的任务树的:kill 后输出管线无需等 EOF
-        // (孙进程持 slave fd 时 EOF 永不到来),协作取消、自行收尾
         handle.cancel.cancel();
         Ok(())
     }

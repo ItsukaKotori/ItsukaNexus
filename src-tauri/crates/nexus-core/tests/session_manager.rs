@@ -32,6 +32,27 @@ fn deadline() -> tokio::time::Instant {
     tokio::time::Instant::now() + TEST_TIMEOUT
 }
 
+/// 总 deadline 内等 Exit 事件(有界等待:总 deadline + 分片超时聚合)。
+/// 途中 State 等低频事件跳过,继续等 Exit;超时/通道关闭返回 None,
+/// 由调用方 expect 承接"Exit 必达"断言(stop 语义不得弱化为超时兜底)。
+async fn recv_with_deadline(rx: &mut EventRx, total: Duration) -> Option<SessionEvent> {
+    let dl = tokio::time::Instant::now() + total;
+    loop {
+        let now = tokio::time::Instant::now();
+        if now >= dl {
+            return None;
+        }
+        match tokio::time::timeout(dl - now, rx.recv()).await {
+            Ok(Some(ev)) => match ev {
+                SessionEvent::Exit { .. } => return Some(ev),
+                _ => continue, // State 等低频事件:跳过
+            },
+            Ok(None) => return None, // 事件通道意外关闭
+            Err(_) => return None,   // 总 deadline 到
+        }
+    }
+}
+
 /// deadline 内收一条事件;超时/通道关闭即 panic
 async fn next_event(rx: &mut EventRx, dl: tokio::time::Instant) -> SessionEvent {
     let now = tokio::time::Instant::now();
@@ -492,4 +513,49 @@ async fn attach_seam_never_duplicates() {
     mgr.send_input(id, "exit\n").await.expect("send 失败");
     let code = wait_exit(&mut rx, id).await;
     assert_eq!(code, 0, "自然退出的 shell 退出码应为 0");
+}
+
+/// 必办#1-a:孙进程持 slave fd 时,force stop 仍应让 Exit 事件及时到达
+/// (不靠 JOIN_TIMEOUT 超时兜底,detail 不得出现 stalled)。
+#[tokio::test]
+async fn force_stop_reaches_exit_with_grandchild_holding_slave() {
+    let (mgr, mut sink_rx) = manager_with_channel();
+    let id = mgr.create("shell", 120, 30).await.unwrap();
+    // 后台孙进程:sleep 持有 slave fd,shell 退出后它还活着
+    mgr.send_input(id, "sleep 1000 &\n").await.unwrap();
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    mgr.stop(id, true).await.unwrap();
+    // Exit 必须在 JOIN_TIMEOUT(5s) 的正常路径内到达:给 4s 上限,留余量
+    let ev = recv_with_deadline(&mut sink_rx, Duration::from_secs(4))
+        .await
+        .expect("Exit 事件应及时到达");
+    match ev {
+        SessionEvent::Exit { session_id, code } => {
+            assert_eq!(session_id, id);
+            assert_ne!(code, 0, "强杀的退出码应非 0");
+        }
+        other => panic!("期望 Exit 事件,得到 {other:?}"),
+    }
+    // 状态应已迁移到终态(list 可见)
+    let snap = mgr.list().into_iter().find(|s| s.session_id == id).unwrap();
+    assert!(matches!(
+        snap.state,
+        nexus_core::agent::state::SessionState::Exited
+            | nexus_core::agent::state::SessionState::Failed
+    ));
+}
+
+/// 必办#1-b:kill 正忙 shell(前台死循环 job 在独立进程组)——M2 实测
+/// SIGHUP 不足导致 Exit 永不到达;killpg + drop master 后必须收敛。
+#[tokio::test]
+async fn force_stop_kills_busy_shell_foreground_job() {
+    let (mgr, mut sink_rx) = manager_with_channel();
+    let id = mgr.create("shell", 120, 30).await.unwrap();
+    mgr.send_input(id, "while :; do :; done\n").await.unwrap();
+    tokio::time::sleep(Duration::from_millis(800)).await; // 等 job 进前台
+    mgr.stop(id, true).await.unwrap();
+    let ev = recv_with_deadline(&mut sink_rx, Duration::from_secs(4))
+        .await
+        .expect("busy shell 场景 Exit 也必须到达");
+    assert!(matches!(ev, SessionEvent::Exit { .. }));
 }
