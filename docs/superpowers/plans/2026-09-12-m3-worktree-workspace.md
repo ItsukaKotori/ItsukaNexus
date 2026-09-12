@@ -2530,3 +2530,39 @@ gh pr checks
 - **类型一致性**:LaunchSpec{T1 不存在,T9 引入并在 T11 复用};worktree_remove trait 签名在 T8 修正为三参(repo, path, delete_branch)——T7 的 trait 定义按 T8 版为准(计划内修正已注明);WorktreeInfo{name,path,branch} T8 定义、T9 IPC/T10 TS 同构;SessionSnapshot 增两字段在 T9 落、T10 TS 加可选;GitCheckInfo.worktreeSupported 为 spec 表格的超集(UI gate 需要)。✅
 - **已知风险**:① T1 的 workspace 迁移若遇 `itsukanexus_lib` 隐患(tests/examples 引用点),以 `grep -rn itsukanexus_lib` 全量清点为准;② shadcn CLI 非交互参数随版本漂移,已给手写退路;③ busy-shell 强杀测试(T3)依赖 shell job control 行为,CI Linux 默认 bash、macOS zsh,均有 job control;若 CI 出现平台差异,允许在测试内按 `SHELL` 环境适配但不得弱化断言(Exit 必达);④ timefmt 的已知时刻断言先 `date -u -r` 核对再钉死。✅
 
+
+---
+
+## 完成记录(2026-09-13,PR #4 已合并)
+
+全部 12 任务完成,每任务独立审查;六项完成标准全过(⑤⑥自动化:core 67 测试三平台绿 + Windows 中文/空格路径用例;①②③④人工+自动化)。终审(fable)判定可合并:零 Critical/Important,2 条合并前顺手修(注释对齐/过期指令),7 条 Minor 按 triage 归 M4/弃。CI 一轮修复(Windows 路径断言斜杠 + Linux 孙进程测试挂死)后四项全绿。终态 cargo test --workspace 68/68。
+
+### M4 必办(终审 triage + 全程延后项,按优先级)
+
+1. **WorktreeName::FromStr 接线 IPC(安全加固,M-3)**:session_create/worktree_remove 现直接吃任意字符串,`../` 可使 cwd 逃出 `.nx-worktrees`(桌面单机威胁模型内属加固);同修 ids.rs FromStr 死分支(T8-①)。
+2. **NewSessionDialog 孤儿 worktree 回滚**:worktreeCreate 成功、sessionCreate 失败时 catch 内 best-effort worktreeRemove(刚建无破坏性)。
+3. **.nx-worktrees/ 与 is_clean**:目录使 repo 变"脏",决定是否写 `.git/info/exclude`(repo 本地零污染,需产品决策)。
+4. **前端打磨包**:stopping 态击键 console 噪音(M-4)、alsoRemoveWt 跨确认框残留(M-5)、校验失败静默降级为纯 shell 需拦截或明示(M-6)、确认框不随后台退出自动关、Dialog 表单重置决策、遮罩色走 token。
+5. **后端可观测性**:which_git 的 std::process 挪 async、GitCommand 附仓库上下文、NotARepo 错误归类细化(bare/权限)、删分支 None 时 warn(T8-②)。
+6. **测试补遗**:base_ref 路径覆盖(T8-③)、worktree remove force 选项(T11-①)、同毫秒创建 list 次级排序键(T4-③)、$SHELL 缺失 fallback(M4 配置驱动自然解)。
+7. **Windows 行为冒烟**:cwd=Some(`\\?\` verbatim)真实行为(session 测试 unix-only,CI 编译不跑);drop(master) Windows 分支持锁析构观察(T3-②)。
+
+### 平台/生态知识库(本轮新踩,执行 M4 前必读)
+
+- **macOS xnu(经典 BSD pty)**:master 写**不因**输入队列满阻塞(丢弃语义,16MB 零读者 0.46s 即 Ok)——写超时的错误路径在 mac 上测不到,真实阻塞在 Linux n_tty(4KB 缓冲 throttle)。本项目组合:mock BlockedWriter 单测钉错误路径 + 真pty集成钉"及时返回" + Linux CI 天然覆盖真超时。
+- **Linux pty**:master read 阻塞到**所有** slave fd 关闭;macOS 在 session leader 退出时撤销 PTY(read 立即 EIO)。→ 孤儿孙进程持 slave 时,mac 测试能收尾、Linux 会挂。
+- **#[tokio::test] runtime drop 会 join spawn_blocking 线程**:泄漏的阻塞 read/write 线程会挂死测试二进制关停(本轮两次命中:T4 mock、T3 孙进程)。测试里凡故意制造阻塞子进程的,断言后必须显式清理(本项目:pkill 唯一 token `sleep 987654`)。
+- **Windows 路径断言**:名字含 `/`(如 `nexus/shell-…`)不可对路径做 `contains` 字面子串(大小写/分隔符双坑);用 components/file_name 结构比较,canonicalize 的 `\\?\` 前缀对 components 透明、对字符串 contains 不透明。
+- **tauri #[command] 宏**:`__cmd__*` 隐藏宏随定义模块生成,显式 `pub use` 搬不走 → commands/mod.rs 用 glob 再导出(`pub use session::*;`),generate_handler 清单写 `commands::foo`。
+- **TypeScript 6.0.3**:`baseUrl` 已弃用硬报错,paths 相对 tsconfig 解析等价,不加 baseUrl。
+- **shadcn 新 registry**:`radix-ui` 单包(非散包);生成的组件 import `cn` 来自 npm 包 `"cn"`,须统一重写为 `@/lib/utils`;dialog 系组件需 `tw-animate-css`;暗色唯一主题要 `@custom-variant dark` 防 `dark:` 类随 OS 偏好漂移。
+- **CI workspace 陷阱**:拆分后根包目录下裸 `cargo test`/`cargo clippy --all-targets` 只覆盖根包,必须 `--workspace`(fmt 默认已 workspace 覆盖)。
+- **macOS /var→/private/var**:tempfile 路径与 canonicalize 结果不同侧,路径断言先同侧归一。
+
+### 裁定索引(全程 M3 预检 3 条 + 任务裁定 7 条,全文见 SDD ledger;关键五条)
+
+- 预检:worktree_remove trait 以 T8 三参版为准;T11 helper 提 tests/common/mod.rs;依赖瘦身以 grep 无直接引用为判据
+- CI --workspace(计划"CI 命令不变"假设错误,T1 修复轮实测纠正)
+- T4:macOS pty 写不阻塞 → 测试改判等强(mock+平台无关属性+Linux CI 组合)
+- T8:WorktreeInfo.branch 用短名(git branch -D 实测不认全限定 ref)
+- CI 修复轮:两失败均测试侧平台缺陷(Windows 斜杠 contains / Linux runtime join 挂死),实现零改动
