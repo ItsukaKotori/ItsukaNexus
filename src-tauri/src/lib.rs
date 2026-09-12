@@ -1,183 +1,17 @@
-// IPC 层:领域核心已拆至 nexus-core crate,这里只留展示/命令薄层。
-pub mod app;
+// IPC 层:tauri Builder 组装 + State 注入。命令在 commands/ 目录(spec §1.2)。
+pub mod app; // M0 的 app_info 领域函数留这层(展示命令,无领域逻辑)
+mod commands;
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
-use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager};
 
-use nexus_core::agent::manager::{SessionEvent, SessionManager, Subscription};
-use nexus_core::agent::state::{SessionSnapshot, SessionState};
-use nexus_core::config;
-use nexus_core::config::model::AppConfig;
-use nexus_core::ids::SessionId;
-
-// ---------- app_info(M0)----------
-
-#[tauri::command]
-fn app_info() -> app::AppInfo {
-    app::app_info()
-}
-
-// ---------- session_*(M2)----------
-
-/// IPC 输出流载荷,只定义在这一层(裁定 M2-P2:nexus-core 不依赖 tauri,
-/// core 侧用 OutputFrame,IPC 层映射自己的 wire 类型)。
-/// sessionId 冗余于订阅会话本身,但保留以钉住 spec §1.4 的前端契约。
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PtyChunk {
-    session_id: SessionId,
-    data: String,
-    seq: u64,
-}
-
-/// session_attach 确认:replayedBytes = 订阅时刻的历史回放字节数。
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct AttachAck {
-    replayed_bytes: u64,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SessionCreated {
-    session_id: SessionId,
-    state: SessionState,
-}
-
-#[tauri::command]
-async fn session_create(
-    state: State<'_, SessionManager>,
-    provider_id: String,
-    cols: Option<u16>,
-    rows: Option<u16>,
-) -> Result<SessionCreated, String> {
-    let id = state
-        .create(&provider_id, cols.unwrap_or(80), rows.unwrap_or(24))
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(SessionCreated {
-        session_id: id,
-        state: SessionState::Running,
-    })
-}
-
-/// 订阅会话输出:历史回放先经 Channel 发一条 `seq: 0` 的 PtyChunk(仅非空),
-/// 随后 spawn 转发任务承接订阅流,逐帧下发给前端。重复 attach 会替换旧订阅,
-/// 旧转发任务随旧接收端关闭自行结束。
-///
-/// 前端契约(T8 依赖):
-/// - 接缝原子化(I-1):replay 尾帧与实时流的交接、重复 attach 的替换都是
-///   互斥临界段,replay 与实时流不重复不丢失;
-/// - 会话退出后 rx 不会关闭(订阅发送端随条目常存,而条目永不删除),
-///   流结束以 `session://exit` 事件为准,而非 Channel 关闭。
-#[tauri::command]
-async fn session_attach(
-    state: State<'_, SessionManager>,
-    session_id: String,
-    output: tauri::ipc::Channel<PtyChunk>,
-) -> Result<AttachAck, String> {
-    let id = parse_id(session_id)?;
-    let Subscription { replay, rx } = state.subscribe(id).map_err(|e| e.to_string())?;
-    let replayed = replay.len() as u64;
-    if !replay.is_empty() {
-        // seq=0 为 replay 专属:实时帧从 1 起单调,消费端可据此区分
-        let _ = output.send(PtyChunk {
-            session_id: id,
-            data: replay,
-            seq: 0,
-        });
-    }
-    tokio::spawn(async move {
-        let mut rx = rx;
-        while let Some(frame) = rx.recv().await {
-            if output
-                .send(PtyChunk {
-                    session_id: id,
-                    data: frame.data,
-                    seq: frame.seq,
-                })
-                .is_err()
-            {
-                break; // 前端 Channel 失效(webview 重载):转发任务自行收尾
-            }
-        }
-        // recv() 返回 None 仅当订阅被替换(旧发送端 drop),并非会话退出;
-        // 流结束以 Exit 事件为准(见命令 doc 注释)
-    });
-    Ok(AttachAck {
-        replayed_bytes: replayed,
-    })
-}
-
-#[tauri::command]
-async fn session_send_input(
-    state: State<'_, SessionManager>,
-    session_id: String,
-    data: String,
-) -> Result<(), String> {
-    let id: SessionId = parse_id(session_id)?;
-    state.send_input(id, &data).await.map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn session_resize(
-    state: State<'_, SessionManager>,
-    session_id: String,
-    cols: u16,
-    rows: u16,
-) -> Result<(), String> {
-    let id: SessionId = parse_id(session_id)?;
-    state.resize(id, cols, rows).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn session_stop(
-    state: State<'_, SessionManager>,
-    session_id: String,
-    force: Option<bool>, // M2 起接通:缺省 false = 优雅关停(先 \x03、宽限,超时再强杀)
-) -> Result<(), String> {
-    let id: SessionId = parse_id(session_id)?;
-    state
-        .stop(id, force.unwrap_or(false))
-        .await
-        .map_err(|e| e.to_string())
-}
-
-/// 会话快照列表:含已退出的会话(侧边栏显示 Exited/Failed)。
-#[tauri::command]
-async fn session_list(state: State<'_, SessionManager>) -> Result<Vec<SessionSnapshot>, String> {
-    Ok(state.list())
-}
-
-fn parse_id(s: String) -> Result<SessionId, String> {
-    s.parse::<SessionId>()
-}
-
-// ---------- config_*(M2)----------
-
-/// 配置目录的 State 注入体:setup 里从 app_config_dir() 解析一次,
-/// 命令侧只拿 PathBuf——store 层保持无 tauri 依赖(spec §1.3)。
-struct ConfigDir(PathBuf);
-
-#[tauri::command]
-fn config_get(dir: State<'_, ConfigDir>) -> Result<AppConfig, String> {
-    Ok(config::store::load_or_create(&dir.0))
-}
-
-/// 保存后重新 load 返回落盘值(以磁盘为准,而非调用方入参)。
-#[tauri::command]
-fn config_save(dir: State<'_, ConfigDir>, config: AppConfig) -> Result<AppConfig, String> {
-    config::store::save(&dir.0, &config).map_err(|e| e.to_string())?;
-    Ok(config::store::load_or_create(&dir.0))
-}
+use commands::ConfigDir;
+use nexus_core::agent::manager::{SessionEvent, SessionManager};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        // log 插件最先注册:后续插件/应用的日志才能被接住(文件 + 控制台,info 起)
         .plugin(
             tauri_plugin_log::Builder::new()
                 .level(log::LevelFilter::Info)
@@ -185,10 +19,7 @@ pub fn run() {
         )
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            // 事件缝的 IPC 端:把 SessionEvent 转 emit。
-            // M2 Task 6 起 session://output 全局 emit 废除:输出已迁移
-            // per-session Channel 下发(session_attach),Output 到达 sink 时
-            // 直接忽略;变体保留供 core 内部/测试使用。
+            // 事件缝的 IPC 端:SessionEvent(State/Exit)→ emit,Output 走 Channel 不经这
             let handle: AppHandle = app.handle().clone();
             let sink = Arc::new(move |ev: SessionEvent| {
                 let event = match &ev {
@@ -205,15 +36,15 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            app_info,
-            session_create,
-            session_attach,
-            session_send_input,
-            session_resize,
-            session_stop,
-            session_list,
-            config_get,
-            config_save
+            commands::app_info,
+            commands::session_create,
+            commands::session_attach,
+            commands::session_send_input,
+            commands::session_resize,
+            commands::session_stop,
+            commands::session_list,
+            commands::config_get,
+            commands::config_save
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

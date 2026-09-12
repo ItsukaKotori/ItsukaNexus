@@ -18,17 +18,26 @@ pub enum SessionState {
 }
 
 impl SessionState {
-    /// 迁移合法性(单一权威;终态吸收一切 = false)
+    /// 迁移合法性(单一权威;终态吸收一切 = false)。
+    /// 穷尽 match:新增状态变体时,编译器在此分支点名所有漏改处
+    /// (matches! 版本对未覆盖组合静默 false,这是 M2 终审必办 #5 的核心)。
     pub fn can_transition_to(&self, next: SessionState) -> bool {
         use SessionState::*;
-        matches!(
-            (self, next),
-            (Running, Stopping)
-                | (Running, Exited)
-                | (Running, Failed)
-                | (Stopping, Exited)
-                | (Stopping, Failed)
-        )
+        match (self, next) {
+            (Running, Stopping) | (Running, Exited) | (Running, Failed) => true,
+            (Stopping, Exited) | (Stopping, Failed) => true,
+            (Running, Running)
+            | (Stopping, Running)
+            | (Stopping, Stopping)
+            | (Exited, Running)
+            | (Exited, Stopping)
+            | (Exited, Exited)
+            | (Exited, Failed)
+            | (Failed, Running)
+            | (Failed, Stopping)
+            | (Failed, Exited)
+            | (Failed, Failed) => false,
+        }
     }
 }
 
@@ -105,5 +114,26 @@ mod tests {
         assert!(json.contains("\"startedAtMs\""));
         assert!(json.contains("\"exitCode\""));
         assert!(!json.contains("session_id"), "键名必须 camelCase");
+    }
+
+    #[test]
+    fn session_state_serde_values_pinned() {
+        // 前端 SessionState 联合类型按这些字面量对齐(types.ts),钉死防漂移
+        assert_eq!(
+            serde_json::to_string(&SessionState::Running).unwrap(),
+            "\"running\""
+        );
+        assert_eq!(
+            serde_json::to_string(&SessionState::Stopping).unwrap(),
+            "\"stopping\""
+        );
+        assert_eq!(
+            serde_json::to_string(&SessionState::Exited).unwrap(),
+            "\"exited\""
+        );
+        assert_eq!(
+            serde_json::to_string(&SessionState::Failed).unwrap(),
+            "\"failed\""
+        );
     }
 }
