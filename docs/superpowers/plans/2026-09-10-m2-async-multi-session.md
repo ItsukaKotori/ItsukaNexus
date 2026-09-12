@@ -1162,3 +1162,24 @@ async fn slow_consumer_applies_backpressure_without_loss() {
 - **有意裁剪(非遗漏)**:进程组 kill(setsid/killpg)需 libc/nix,归 M3(P7 用 join 超时兜底根治"Exit 不发");WaitingInput 状态 v1.1;AgentProfile 仅结构+默认 shell 条目,真实注册表 M4;1-4 宫格 M4;TS 类型从 Rust 生成( specta)记 M3 议题;grid 布局 M4。
 - **类型一致性**:PtyChunk{sessionId,data,seq} Rust(serde camelCase)↔TS(T8 types.ts)对齐;SessionSnapshot{sessionId,state,startedAtMs,exitCode,pid}↔TS;StateChange{sessionId,prev,next,atMs,detail}↔TS;SessionEvent tag=type 三变体与 lib.rs emit 的三个通道名对齐;NexusError 新增 SessionNotRunning 在 T5 定义、T6 映射。✅
 - **已知风险**:T5 是最大任务(重写 manager),若子代理两轮仍卡,拆 T5a(PtySession into_parts + async batcher)/T5b(manager 重写)两发;T8 的 terminalManager 代码里 import 置顶已注明;T9 的 O(n²) 断言已改为 HashSet 方案并注明。✅
+
+---
+
+## 完成记录(2026-09-12,PR #2 + PR #3 均已合并)
+
+全部 10 任务完成,每任务独立审查 + 修复波复审;六项完成标准全过(②⑥自动化:背压 ~10MB 垫行三轮稳定 / decode 滑窗全切分;①③④⑤人工)。终审无 Critical,1 Important(I-1 接缝重复帧)经 follow-up PR #3 修复(临界段配对原子化 + 钉住测试)。终态 cargo test 35/35。
+
+### M3 必办(终审 triage + follow-up 发现,按优先级)
+
+1. **进程组 kill(setsid/killpg 或平台等价)**——一并解决:kill 正忙 shell 时 SIGHUP 不足 Exit 永不到达(follow-up 波实测发现,main 既有)、孙进程持 slave fd 的 reader 线程泄漏(M2-P7 只兜了 Exit 不发)。
+2. **会话回收策略**:终态 drop subscriber(终结常驻转发任务)、条目上限或手动清理——控制长时运行足迹(每退出会话留 1 任务 + 256KB replay + 句柄)。
+3. `list()` 按 startedAtMs 排序(刷新后 tab 序稳定);`send_input` 写超时(巨量粘贴给不读输入的子进程会挂 invoke)。
+4. config 三项:非 NotFound 读错误不覆盖写、save 入参 clamp、命令 async 化。
+5. workspace 拆分时:状态机换穷尽 match(matches! 无编译器点名)、补 serde 枚举值钉住测试、spec §1.3 写路径与 §1.4 `at`/`atMs` 措辞对齐实现。
+6. 终端退出反馈(灰色标记 + 只读,关掉每键 console.error 噪音);两处过时注释(terminalManager.ts:4 / types.ts:24 的"按 seq 去重"措辞)。
+
+### 裁定索引(全程 M2-P1~P10,详见 SDD 执行过程;关键三条)
+
+- P5:tokio example 背压挂起点勘误 send(4) 非 send(3)
+- P8:推翻"seq 去重免疫重复"错误断言→I-1 必修(终审交错代数证明)
+- P10:kill 正忙 shell 归 M3(钉住测试收尾用自然 exit 避开)
