@@ -21,7 +21,8 @@ export interface SessionCreated {
 
 /** session_attach 输出流帧(lib.rs PtyChunk)。
  *  seq = 0 为 replay 帧(每条订阅至多一条、先行);实时帧从 1 起按会话单调,
- *  跨订阅不回退。订阅接缝可能重复帧,消费端须按 seq 去重。 */
+ *  跨订阅不回退。接缝经 Rust 侧临界段原子化(I-1)不重复不丢失;
+ *  seq 过滤仅作防御性保留。 */
 export interface PtyChunk {
   sessionId: string;
   data: string;
@@ -40,6 +41,38 @@ export interface SessionSnapshot {
   startedAtMs: number;
   exitCode: number | null;
   pid: number | null;
+  /** M3:启动 cwd 关联的仓库与 worktree(未绑定时为 null) */
+  repoPath?: string | null;
+  worktreeName?: string | null;
+}
+
+/** git_check 返回(gitx/ops.rs GitCheckInfo) */
+export interface GitCheckInfo {
+  available: boolean;
+  version: string | null;
+  path: string | null;
+  worktreeSupported: boolean;
+}
+
+/** git_validate_repo 返回(gitx/ops.rs RepoInfo) */
+export interface RepoInfo {
+  root: string;
+  currentBranch: string | null;
+  isClean: boolean;
+}
+
+/** worktree_list / worktree_create 返回(gitx/ops.rs WorktreeInfo) */
+export interface WorktreeInfo {
+  name: string;
+  path: string;
+  branch: string | null;
+}
+
+/** worktree://changed 载荷(gitx/worktree.rs WorktreeChanged;
+ *  change 为 serde camelCase 枚举值,首字母小写) */
+export interface WorktreeChanged {
+  repoPath: string;
+  change: "created" | "removed";
 }
 
 /** session://state 事件载荷(agent/state.rs StateChange,tag=type) */

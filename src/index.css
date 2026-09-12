@@ -1,4 +1,11 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+
+/* dark: 变体确定性 inert:vendored shadcn 组件内含 dark: 类,默认 v4 语义是
+   prefers-color-scheme 媒体查询(系统浅色时不生效、深色时误启)。
+   本应用暗色为唯一主题(变量直接落 :root、永不挂 .dark),收紧为类选择器后
+   dark: 类恒不生效,组件外观跨系统主题稳定(T6 审查 carry)。 */
+@custom-variant dark (&:where(.dark, .dark *));
 
 /* 暗色为唯一主题:shadcn 的 .dark 变量直接落 :root(桌面终端工具,无亮色切换) */
 :root {

@@ -36,6 +36,10 @@ export default function TerminalTabs({
         const meta = STATE_META[snap.state];
         const active = id === activeId;
         const live = snap.state === "running" || snap.state === "stopping";
+        // worktree 完整名是 nexus/<provider>-<时间戳>-<rand>,tab 上只留最后段
+        const wtShort = snap.worktreeName
+          ? snap.worktreeName.split("/").pop()
+          : null;
         return (
           <div
             key={id}
@@ -46,6 +50,14 @@ export default function TerminalTabs({
             }`}
           >
             <span className="font-semibold">#{index + 1}</span>
+            {wtShort && (
+              <span
+                className="text-muted-foreground"
+                title={snap.worktreeName ?? undefined}
+              >
+                {wtShort.length > 16 ? `${wtShort.slice(0, 15)}…` : wtShort}
+              </span>
+            )}
             <span
               className={`inline-flex items-center gap-1 ${meta.text}`}
             >

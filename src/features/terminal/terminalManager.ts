@@ -1,7 +1,8 @@
 // React 外的常驻终端实例注册表(spec §1.5 性能红线):
 // - PTY 输出经 Channel 直达 term.write,不进 React state/渲染;
 // - 实例生命周期与组件挂载解耦:tab 只隐藏不卸载,关 tab 才真正 dispose;
-// - 每个 entry 一条 Channel(attach 幂等守卫),按 seq 去重接缝重复帧。
+// - 每个 entry 一条 Channel(attach 幂等守卫);seq 过滤为防御性保留
+//   (接缝已由 Rust 侧临界段原子化,I-1)。
 import { Channel } from "@tauri-apps/api/core";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -29,6 +30,8 @@ interface Entry {
   opened: boolean;
   /** 已写入的最大实时 seq:接缝重复帧(≤1 帧或替换订阅并行下发)由此丢弃 */
   lastSeq: number;
+  /** 会话已终态(Exited/Failed):onData 输入门禁(xterm 无 readonly) */
+  closed: boolean;
 }
 
 const entries = new Map<string, Entry>();
@@ -42,6 +45,12 @@ export function setTerminalConfig(c: AppConfig["terminal"]): void {
 
 export function getEntry(id: string): Entry | undefined {
   return entries.get(id);
+}
+
+/** 会话终态后的输入门禁开关(TerminalPane 随 store 状态调用) */
+export function setClosed(id: string, closed: boolean): void {
+  const e = entries.get(id);
+  if (e) e.closed = closed;
 }
 
 function logInvokeError(what: string): (e: unknown) => void {
@@ -60,6 +69,8 @@ export function createEntry(id: string): Entry {
   const fit = new FitAddon();
   terminal.loadAddon(fit);
   terminal.onData((data) => {
+    const e = entries.get(id);
+    if (!e || e.closed) return; // 退出/失败后输入门禁(xterm 无 readonly)
     void sessionSendInput(id, data).catch(logInvokeError("session_send_input"));
   });
   const entry: Entry = {
@@ -69,6 +80,7 @@ export function createEntry(id: string): Entry {
     attached: false,
     opened: false,
     lastSeq: 0,
+    closed: false,
   };
   entries.set(id, entry);
   return entry;

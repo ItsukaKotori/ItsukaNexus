@@ -8,21 +8,32 @@ import type {
   AppConfig,
   AppInfo,
   AttachAck,
+  GitCheckInfo,
   PtyChunk,
+  RepoInfo,
   SessionCreated,
   SessionSnapshot,
+  WorktreeInfo,
 } from "./types";
 
 export function getAppInfo(): Promise<AppInfo> {
   return invoke<AppInfo>("app_info");
 }
 
+/** M3:opts 缺省 = 不绑仓库;worktreeName 必须伴随 repoPath(Rust 侧校验) */
 export function sessionCreate(
   providerId: string,
   cols: number,
-  rows: number
+  rows: number,
+  opts?: { repoPath?: string; worktreeName?: string }
 ): Promise<SessionCreated> {
-  return invoke<SessionCreated>("session_create", { providerId, cols, rows });
+  return invoke<SessionCreated>("session_create", {
+    providerId,
+    cols,
+    rows,
+    repoPath: opts?.repoPath ?? null,
+    worktreeName: opts?.worktreeName ?? null,
+  });
 }
 
 /** 订阅会话输出:replay 帧(seq=0)先行,实时帧经同一 Channel 续流。
@@ -68,4 +79,46 @@ export function sessionResize(
  *  后才返回;force=true 立即 kill。仅 Running 状态可停,重复停会报错。 */
 export function sessionStop(sessionId: string, force = false): Promise<void> {
   return invoke<void>("session_stop", { sessionId, force });
+}
+
+/** 会话回收(M3 关 tab 即删):仅终态(Exited/Failed)可删,运行中报错 */
+export function sessionDispose(sessionId: string): Promise<void> {
+  return invoke<void>("session_dispose", { sessionId });
+}
+
+/** 探测系统 git:可用性/版本/路径/worktree 支持(缺失返回 available=false,不报错) */
+export function gitCheck(): Promise<GitCheckInfo> {
+  return invoke<GitCheckInfo>("git_check");
+}
+
+/** 校验路径是 git 仓库,返回根目录/当前分支/是否干净 */
+export function gitValidateRepo(repoPath: string): Promise<RepoInfo> {
+  return invoke<RepoInfo>("git_validate_repo", { repoPath });
+}
+
+/** 列出仓库的 worktree(nexus 命名规范项 + 用户外建项) */
+export function worktreeList(repoPath: string): Promise<WorktreeInfo[]> {
+  return invoke<WorktreeInfo[]>("worktree_list", { repoPath });
+}
+
+/** 按 nexus 规范建 worktree;provider/baseRef 缺省由后端兜底(shell / HEAD) */
+export function worktreeCreate(
+  repoPath: string,
+  provider?: string,
+  baseRef?: string
+): Promise<WorktreeInfo> {
+  return invoke<WorktreeInfo>("worktree_create", {
+    repoPath,
+    provider: provider ?? null,
+    baseRef: baseRef ?? null,
+  });
+}
+
+/** 按 name 移除 worktree;deleteBranch 连带删本地分支 */
+export function worktreeRemove(
+  repoPath: string,
+  name: string,
+  deleteBranch: boolean
+): Promise<void> {
+  return invoke<void>("worktree_remove", { repoPath, name, deleteBranch });
 }
