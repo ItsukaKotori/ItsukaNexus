@@ -1,5 +1,67 @@
-/* 全局重置:body 默认 8px margin 会让 100vh 布局溢出 16px(底部裁切 + 常驻滚动条) */
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/* dark: 变体确定性 inert:vendored shadcn 组件内含 dark: 类,默认 v4 语义是
+   prefers-color-scheme 媒体查询(系统浅色时不生效、深色时误启)。
+   本应用暗色为唯一主题(变量直接落 :root、永不挂 .dark),收紧为类选择器后
+   dark: 类恒不生效,组件外观跨系统主题稳定(T6 审查 carry)。 */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* 暗色为唯一主题:shadcn 的 .dark 变量直接落 :root(桌面终端工具,无亮色切换) */
+:root {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+  --radius: 0.625rem;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
 body {
-  margin: 0;
-  overflow: hidden;
+  /* overflow:hidden:100vh 布局防常驻滚动条(沿用 M0 全局重置语义) */
+  @apply bg-background text-foreground overflow-hidden;
 }

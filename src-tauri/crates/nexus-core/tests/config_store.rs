@@ -4,8 +4,8 @@
 use std::fs;
 use std::path::PathBuf;
 
-use itsukanexus_lib::config::model::{AgentProfile, AppConfig};
-use itsukanexus_lib::config::{default_config, store};
+use nexus_core::config::model::{AgentProfile, AppConfig};
+use nexus_core::config::{default_config, store};
 
 /// 唯一临时目录:temp_dir/itsukanexus-test-<uuid>,已创建。
 fn temp_dir() -> PathBuf {
@@ -18,7 +18,7 @@ fn temp_dir() -> PathBuf {
 #[test]
 fn empty_dir_load_or_create_returns_default_and_writes_file() {
     let dir = temp_dir();
-    let cfg = store::load_or_create(&dir);
+    let cfg = store::load_or_create(&dir).0;
 
     assert_eq!(cfg.version, 1);
     assert_eq!(cfg.terminal.font_family, None);
@@ -29,10 +29,7 @@ fn empty_dir_load_or_create_returns_default_and_writes_file() {
     let shell = &cfg.agent_profiles[0];
     assert_eq!(shell.id, "shell");
     assert_eq!(shell.display_name, "Shell");
-    assert_eq!(
-        shell.command,
-        itsukanexus_lib::agent::manager::default_shell()
-    );
+    assert_eq!(shell.command, nexus_core::agent::manager::default_shell());
     assert!(shell.args_template.is_empty());
     assert!(shell.env.is_empty());
 
@@ -47,7 +44,7 @@ fn empty_dir_load_or_create_returns_default_and_writes_file() {
 #[test]
 fn save_then_load_round_trip() {
     let dir = temp_dir();
-    let mut cfg = store::load_or_create(&dir);
+    let mut cfg = store::load_or_create(&dir).0;
     cfg.terminal.font_size = 15;
     cfg.terminal.font_family = Some("JetBrains Mono".into());
     cfg.agent_profiles.push(AgentProfile {
@@ -62,7 +59,7 @@ fn save_then_load_round_trip() {
 
     store::save(&dir, &cfg).expect("save 失败");
 
-    let reloaded = store::load_or_create(&dir);
+    let reloaded = store::load_or_create(&dir).0;
     assert_eq!(reloaded, cfg);
 
     let _ = fs::remove_dir_all(&dir);
@@ -74,7 +71,7 @@ fn corrupted_config_self_heals_via_bak() {
     let dir = temp_dir();
     fs::write(dir.join("config.json"), "{ not valid json").expect("写坏文件失败");
 
-    let cfg = store::load_or_create(&dir);
+    let cfg = store::load_or_create(&dir).0;
     assert_eq!(cfg, default_config());
 
     assert!(dir.join("config.json.bak").exists());
@@ -83,4 +80,32 @@ fn corrupted_config_self_heals_via_bak() {
     assert_eq!(parsed, cfg);
 
     let _ = fs::remove_dir_all(&dir);
+}
+
+/// 必办#4-a:非 NotFound 的读错误(如 config.json 是目录)不得覆盖写默认
+#[test]
+fn load_returns_default_without_write_on_non_notfound_error() {
+    let dir = std::env::temp_dir().join(format!("nx-cfg-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::create_dir(dir.join("config.json")).unwrap(); // 目录 → read 报错(非 NotFound)
+    let (cfg, wrote) = nexus_core::config::store::load_or_create(&dir);
+    assert_eq!(cfg, nexus_core::config::model::AppConfig::default());
+    assert!(!wrote, "读失败(非 NotFound)时不应尝试写默认");
+    assert!(dir.join("config.json").is_dir(), "原目录保持原样");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// 必办#4-b:save 前入参 clamp,磁盘永远是合法值
+#[test]
+fn save_clamps_out_of_range_values() {
+    let dir = std::env::temp_dir().join(format!("nx-cfg-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut cfg = nexus_core::config::model::AppConfig::default();
+    cfg.terminal.font_size = 200;
+    cfg.terminal.scrollback = 0;
+    nexus_core::config::store::save(&dir, &cfg).unwrap();
+    let (loaded, _) = nexus_core::config::store::load_or_create(&dir);
+    assert_eq!(loaded.terminal.font_size, 72);
+    assert_eq!(loaded.terminal.scrollback, 100);
+    std::fs::remove_dir_all(&dir).ok();
 }

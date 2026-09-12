@@ -16,6 +16,7 @@
 // 跨越 .await / sink 回调(需要跨点的值先 clone 出来再放锁)。
 use std::collections::HashMap;
 use std::io::Read;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -48,6 +49,10 @@ const GRACE_PERIOD: Duration = Duration::from_secs(2);
 /// 写超时不直接 kill,而是放弃这次写入、照常走宽限轮询:子进程若在写超时
 /// 窗口内自行退出则免杀更优;全程最坏 ~2s(写)+ ~2s(宽限)有界
 const CTRL_C_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
+/// send_input 的写超时(必办#3):大粘贴 + 子进程不读 → write 阻塞。
+/// 与 stop 的 Ctrl-C 写超时同型:超时放弃等待,spawn_blocking 线程随写入
+/// 最终完成/失败自然收场(最多泄漏一个,进程退出兜底)。
+const SEND_INPUT_TIMEOUT: Duration = Duration::from_secs(2);
 /// 优雅关停轮询间隔(状态迁移的真正通知由 wait 任务驱动,这里只是等它)
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
 
@@ -83,12 +88,23 @@ pub struct Subscription {
     pub rx: mpsc::Receiver<OutputFrame>,
 }
 
+/// 会话落点(spec §1.4 session_create 的 repo_path/worktree_name 消费端)。
+/// cwd 是 PTY 子进程的工作目录(worktree 目录即落这里);repo_path/
+/// worktree_name 原样透传进快照,前端据它标记 tab 的 worktree 归属。
+#[derive(Debug, Clone)]
+pub struct LaunchSpec {
+    pub cwd: PathBuf,
+    pub repo_path: Option<String>,
+    pub worktree_name: Option<String>,
+}
+
 /// 瘦句柄:表里存它,任务树/调用方共享其中的 Arc。Clone 便宜(Arc + 快照)。
 #[derive(Clone)]
 struct SessionHandle {
     writer: Arc<Mutex<Box<dyn std::io::Write + Send>>>,
     killer: Arc<Mutex<Box<dyn ChildKiller + Send + Sync>>>,
-    master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
+    /// None = master 已被 stop 的进程组 kill 消费(drop → 内核向前台组投 SIGHUP)
+    master: Arc<Mutex<Option<Box<dyn MasterPty + Send>>>>,
     snapshot: SessionSnapshot,
     replay: Arc<Mutex<ReplayBuffer>>,
     /// 当前订阅发送端;None = 无人订阅(replay 照常积累)
@@ -119,7 +135,7 @@ impl Inner {
         let prev = {
             let mut guard = self.sessions.lock().expect("会话表锁被毒化");
             let Some(handle) = guard.get_mut(&id) else {
-                return; // 条目已不在:无从谈起状态(M2 条目永不删除,防御性分支)
+                return; // 条目已不在:无从谈起状态(M2-M3:条目保留至 dispose,防御性分支)
             };
             let prev = handle.snapshot.state;
             if !prev.can_transition_to(next) {
@@ -155,6 +171,38 @@ pub struct SessionManager {
     inner: Arc<Inner>,
 }
 
+/// 带超时的写路径(必办#3,send_input 复用):write_all/flush 丢进阻塞线程
+/// 池别扣住执行器;超时只是"放弃等待并报错"——被弃置的 spawn_blocking 线程
+/// 仍在写(线程无法安全杀),持有 writer 锁直到写入最终完成/失败,锁竞争由
+/// stop 路径自己的写超时兜底。超时后最多滞留一个阻塞线程,进程退出兜底。
+async fn write_with_timeout(
+    writer: Arc<Mutex<Box<dyn std::io::Write + Send>>>,
+    bytes: Vec<u8>,
+    timeout: Duration,
+) -> Result<(), NexusError> {
+    match tokio::time::timeout(
+        timeout,
+        tokio::task::spawn_blocking(move || -> Result<(), NexusError> {
+            let mut w = writer.lock().map_err(|e| {
+                NexusError::Pty(std::io::Error::other(format!("writer 被毒化: {e}")))
+            })?;
+            w.write_all(&bytes)?;
+            w.flush()?;
+            Ok(())
+        }),
+    )
+    .await
+    {
+        Ok(Ok(res)) => res,
+        Ok(Err(e)) => Err(NexusError::Pty(std::io::Error::other(format!(
+            "写任务失败: {e}"
+        )))),
+        Err(_) => Err(NexusError::Pty(std::io::Error::other(format!(
+            "写超时({timeout:?}):子进程未消费输入(可能已停止读取)"
+        )))),
+    }
+}
+
 /// 默认 shell:优先 $SHELL,逐级 fallback。
 /// M4 由 AgentProfile/配置驱动,此函数退化为兜底默认值。
 pub fn default_shell() -> String {
@@ -179,12 +227,16 @@ impl SessionManager {
     }
 
     /// spawn 一个 shell 会话,拉起三段任务树,入表后发 State{Running}。
-    /// 注意:本函数不 await 任何东西,async 是与 IPC 层(Task 6)的签名契约。
+    /// launch = Some 时子进程 cwd 落在该目录(worktree 集成点),repo_path/
+    /// worktree_name 透传进快照;None = M2 行为(继承本进程 cwd,快照两字段
+    /// 为 None)。注意:本函数不 await 任何东西,async 是与 IPC 层(Task 6)
+    /// 的签名契约。
     pub async fn create(
         &self,
         provider_id: &str,
         cols: u16,
         rows: u16,
+        launch: Option<&LaunchSpec>,
     ) -> Result<SessionId, NexusError> {
         if provider_id != "shell" {
             return Err(NexusError::UnsupportedProvider(provider_id.to_string()));
@@ -192,7 +244,13 @@ impl SessionManager {
         let id = SessionId::new();
         // take_reader 内部的 expect 是 panic 路径,前提是 master 存活——
         // 这里 session 刚 spawn、master 尚未 drop/关闭,前提成立(继承 M1 注记)。
-        let (session, child) = PtySession::spawn(&default_shell(), &[], cols, rows)?;
+        let (session, child) = PtySession::spawn(
+            &default_shell(),
+            &[],
+            cols,
+            rows,
+            launch.map(|l| l.cwd.as_path()),
+        )?;
         let reader = session.take_reader();
         let parts = session.into_parts();
         let pid = child.process_id();
@@ -303,6 +361,12 @@ impl SessionManager {
             };
             // 先写状态再发 Exit:收到 Exit 时 list() 必已可见终态(测试钉住)
             inner.set_state(id, next, Some(code), detail);
+            // 终态断订阅(必办#2):常驻转发任务在存量耗尽后自然结束,
+            // 退出会话不再占订阅通道;条目与 replay 保留(刷新恢复仍可看)。
+            // 锁序 表锁→订阅锁,持锁只做置 None,不跨 await/sink(文件头约定)
+            if let Some(h) = inner.sessions.lock().expect("会话表锁被毒化").get_mut(&id) {
+                *h.subscriber.lock().expect("订阅锁") = None;
+            }
             (inner.sink)(SessionEvent::Exit {
                 session_id: id,
                 code,
@@ -319,6 +383,8 @@ impl SessionManager {
                 started_at_ms: now_ms(),
                 exit_code: None,
                 pid,
+                repo_path: launch.and_then(|l| l.repo_path.clone()),
+                worktree_name: launch.and_then(|l| l.worktree_name.clone()),
             },
             replay,
             subscriber,
@@ -352,6 +418,18 @@ impl SessionManager {
         let handle = guard
             .get_mut(&id)
             .ok_or_else(|| NexusError::SessionNotFound(id.to_string()))?;
+        // 终态:batcher 已退出,不会再有帧。返回已关闭的 rx(drop 发送端),
+        // IPC 转发任务 recv 即 None 自然收尾——刷新恢复时 attach 已退出会话
+        // 不再泄漏常驻转发任务;replay 照常重放历史。
+        if matches!(
+            handle.snapshot.state,
+            SessionState::Exited | SessionState::Failed
+        ) {
+            let replay = handle.replay.lock().expect("replay 锁").snapshot();
+            let (_tx, rx) = mpsc::channel(1);
+            drop(_tx);
+            return Ok(Subscription { replay, rx });
+        }
         let (tx, rx) = mpsc::channel(SUBSCRIBER_DEPTH);
         // 接缝原子化(I-1):持订阅锁期间完成 snapshot+替换(锁序 subscriber→
         // replay),与 batcher 的 push+clone 临界段互斥——snapshot 只含已 push
@@ -379,21 +457,7 @@ impl SessionManager {
         }; // 表锁在此释放
         let bytes = data.as_bytes().to_vec();
         // 大粘贴 + 子进程不读 = write 可能长时间阻塞:丢进阻塞线程池,别扣住执行器
-        match tokio::task::spawn_blocking(move || -> Result<(), NexusError> {
-            let mut w = writer.lock().map_err(|e| {
-                NexusError::Pty(std::io::Error::other(format!("writer 被毒化: {e}")))
-            })?;
-            w.write_all(&bytes)?;
-            w.flush()?;
-            Ok(())
-        })
-        .await
-        {
-            Ok(res) => res,
-            Err(e) => Err(NexusError::Pty(std::io::Error::other(format!(
-                "写任务失败: {e}"
-            )))),
-        }
+        write_with_timeout(writer, bytes, SEND_INPUT_TIMEOUT).await
     }
 
     pub fn resize(&self, id: SessionId, cols: u16, rows: u16) -> Result<(), NexusError> {
@@ -407,20 +471,23 @@ impl SessionManager {
         let master = master
             .lock()
             .map_err(|e| NexusError::Pty(std::io::Error::other(format!("master 被毒化: {e}"))))?;
-        master
-            .resize(PtySize {
+        // master 已被 stop 消费(None):会话必死,resize 无意义,静默成功
+        if let Some(m) = master.as_ref() {
+            m.resize(PtySize {
                 rows,
                 cols,
                 pixel_width: 0,
                 pixel_height: 0,
             })
             .map_err(pty_err)?;
+        }
         Ok(())
     }
 
     /// 停止会话。force=true 直接 kill;false 先发 \x03(Ctrl-C 字节进 PTY,是给
     /// 子进程的信号)、宽限 2s 等它自行退出、超时再 kill。
-    /// 条目永不删除:退出后仍在表里,状态 Exited/Failed(风险 #6 的最终解)。
+    /// 退出后条目保留(状态 Exited/Failed),直至前端关 tab 调 dispose 显式回收
+    /// (风险 #6 的最终解 + M3 会话回收)。
     pub async fn stop(&self, id: SessionId, force: bool) -> Result<(), NexusError> {
         let handle = {
             self.inner
@@ -472,9 +539,18 @@ impl SessionManager {
             }
         }
         {
-            // 上游 portable-pty 0.9.0 WinChildKiller::kill 成败判定反转:Err 不
-            // 代表失败(成功也报 Err)。退出的真相以 wait 任务的 Exit 事件为准,
-            // 这里只记日志、不改控制流:Windows 侧降为 debug,unix 保留 warn
+            // Unix 进程组语义(M3 必办#1):子进程开 controlling terminal 即
+            // session leader(pgid == pid),killpg 一次杀掉 shell 组;
+            // 前台 busy job 在另一进程组——由 drop master 触发内核 SIGHUP。
+            #[cfg(unix)]
+            if let Some(pid) = handle.snapshot.pid {
+                // ESRCH(组已死)等 errno 一概忽略:退出真相以 Exit 事件为准
+                unsafe {
+                    libc::killpg(pid as libc::pid_t, libc::SIGKILL);
+                }
+            }
+            // 上游 portable-pty 0.9.0 WinChildKiller::kill 成败判定反转:
+            // Err 不代表失败。Windows 主路径;Unix 兜底(killpg 之外的保险)
             let mut killer = handle.killer.lock().expect("killer 锁被毒化");
             if let Err(e) = killer.kill() {
                 #[cfg(windows)]
@@ -483,20 +559,110 @@ impl SessionManager {
                 log::warn!("kill 失败 session={id}: {e}");
             }
         }
+        // drop master:内核向前台进程组发 SIGHUP(kill 正忙 shell 的关键一击),
+        // slave 全关 → reader EOF;master 已被消费(None)则无事发生
+        drop(handle.master.lock().expect("master 锁被毒化").take());
         // 令牌是给我们自己的任务树的:kill 后输出管线无需等 EOF
-        // (孙进程持 slave fd 时 EOF 永不到来),协作取消、自行收尾
         handle.cancel.cancel();
         Ok(())
     }
 
-    /// 会话快照列表:含已退出的会话(侧边栏显示 Exited/Failed)
+    /// 会话回收(必办#2,"关 tab 即删"):仅终态可删。
+    /// drop 条目 = 释放 replay/订阅/句柄/取消令牌的全部 Arc(RAII),
+    /// 无需显式 close——所有权即资源管理;运行中 → SessionNotRunning,
+    /// 不存在 → SessionNotFound。
+    pub fn dispose(&self, id: SessionId) -> Result<(), NexusError> {
+        let mut guard = self.inner.sessions.lock().expect("会话表锁被毒化");
+        let handle = guard
+            .get(&id)
+            .ok_or_else(|| NexusError::SessionNotFound(id.to_string()))?;
+        if !matches!(
+            handle.snapshot.state,
+            SessionState::Exited | SessionState::Failed
+        ) {
+            return Err(NexusError::SessionNotRunning(id.to_string()));
+        }
+        guard.remove(&id);
+        Ok(())
+    }
+
+    /// 会话快照列表:含已退出的会话(侧边栏显示 Exited/Failed),
+    /// 按 startedAtMs 升序(必办#3:HashMap 无序,刷新后 tab 序要稳定)
     pub fn list(&self) -> Vec<SessionSnapshot> {
-        self.inner
+        let mut snaps: Vec<SessionSnapshot> = self
+            .inner
             .sessions
             .lock()
             .expect("会话表锁被毒化")
             .values()
             .map(|h| h.snapshot.clone())
-            .collect()
+            .collect();
+        snaps.sort_by_key(|s| s.started_at_ms);
+        snaps
+    }
+}
+
+#[cfg(test)]
+mod write_timeout_tests {
+    use super::*;
+
+    /// write_all 永不完成的写端:模拟"子进程不读、PTY 输入缓冲满"(Linux
+    /// n_tty 会阻塞 master 写;macOS xnu 不阻塞,故超时路径用 mock 钉住)。
+    /// 阻塞用 channel 门而非 sleep:超时弃置的 spawn_blocking 线程要等
+    /// runtime 关停时收割,sleep 型 mock 会把整个测试二进制钉在关停上;
+    /// 测试断言完显式放行,写线程即刻自然收场
+    struct BlockedWriter(std::sync::mpsc::Receiver<()>);
+    impl std::io::Write for BlockedWriter {
+        fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+            let _ = self.0.recv(); // 阻塞直到测试放行
+            Ok(5)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// 立即完成的写端:守卫"快速写不得误报超时"
+    struct InstantWriter;
+    impl std::io::Write for InstantWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn write_times_out_when_writer_never_completes() {
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let writer: Arc<Mutex<Box<dyn std::io::Write + Send>>> =
+            Arc::new(Mutex::new(Box::new(BlockedWriter(release_rx))));
+        let start = std::time::Instant::now();
+        let r = write_with_timeout(writer, b"hello".to_vec(), Duration::from_millis(100)).await;
+        let elapsed = start.elapsed();
+        let err = r.expect_err("永不完成的写必须在超时窗后报错");
+        assert!(
+            matches!(err, NexusError::Pty(_)),
+            "超时错误应为 Pty: {err:?}"
+        );
+        assert!(
+            elapsed >= Duration::from_millis(100),
+            "必须等满超时窗,实际 {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "超时必须及时返回而非挂死,实际 {elapsed:?}"
+        );
+        // 先放行被弃置的写线程,再让 runtime 关停收割它(顺序即防钉死)
+        drop(release_tx);
+    }
+
+    #[tokio::test]
+    async fn write_succeeds_when_writer_is_fast() {
+        let writer: Arc<Mutex<Box<dyn std::io::Write + Send>>> =
+            Arc::new(Mutex::new(Box::new(InstantWriter)));
+        let r = write_with_timeout(writer, b"hello".to_vec(), Duration::from_millis(100)).await;
+        assert!(r.is_ok(), "快速写端不得误报超时: {r:?}");
     }
 }

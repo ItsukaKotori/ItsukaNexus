@@ -7,6 +7,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent::manager::default_shell;
 
+/// 终端参数合法区间(save 前统一 clamp,磁盘永远是合法值——必办#4)
+pub const FONT_MIN: u16 = 6;
+pub const FONT_MAX: u16 = 72;
+pub const SCROLLBACK_MIN: u32 = 100;
+pub const SCROLLBACK_MAX: u32 = 100_000;
+
 /// 应用配置根。`version` 预留给后续 schema 迁移。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -23,6 +29,14 @@ impl Default for AppConfig {
             terminal: TerminalConfig::default(),
             agent_profiles: vec![AgentProfile::default_shell_profile()],
         }
+    }
+}
+
+impl AppConfig {
+    /// 全量 clamp 递归到子结构:save 前统一收口,保证落盘值合法(必办#4)。
+    pub fn clamped(mut self) -> Self {
+        self.terminal = self.terminal.clamped();
+        self
     }
 }
 
@@ -44,6 +58,15 @@ impl Default for TerminalConfig {
             font_size: 13,
             scrollback: 5000,
         }
+    }
+}
+
+impl TerminalConfig {
+    /// 终端参数收口到合法区间:fontSize 6..=72、scrollback 100..=100_000。
+    pub fn clamped(mut self) -> Self {
+        self.font_size = self.font_size.clamp(FONT_MIN, FONT_MAX);
+        self.scrollback = self.scrollback.clamp(SCROLLBACK_MIN, SCROLLBACK_MAX);
+        self
     }
 }
 

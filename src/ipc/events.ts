@@ -6,7 +6,7 @@
 // 调用方 `void p.then(u => u())` 的链上不会再有悬挂拒绝。
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-import type { SessionExitEvent, StateChange } from "./types";
+import type { SessionExitEvent, StateChange, WorktreeChanged } from "./types";
 
 function safeListen<T>(
   event: string,
@@ -30,4 +30,11 @@ export function onSessionExitEvent(
   cb: (ev: SessionExitEvent) => void
 ): Promise<UnlistenFn> {
   return safeListen<SessionExitEvent>("session://exit", cb);
+}
+
+/** worktree://changed:增删联动(全局事件) */
+export function onWorktreeChanged(
+  cb: (ev: WorktreeChanged) => void
+): Promise<UnlistenFn> {
+  return safeListen<WorktreeChanged>("worktree://changed", cb);
 }
