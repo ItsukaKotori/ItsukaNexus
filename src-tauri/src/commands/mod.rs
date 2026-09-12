@@ -5,7 +5,9 @@
 pub mod app;
 pub mod config;
 pub mod session;
+pub mod worktree;
 
 pub use app::*;
 pub use config::*;
 pub use session::*;
+pub use worktree::*;

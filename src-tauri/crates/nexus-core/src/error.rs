@@ -24,4 +24,7 @@ pub enum NexusError {
     /// git 命令执行失败(stderr 透传给 UI)
     #[error("git {cmd} 失败: {stderr}")]
     GitCommand { cmd: String, stderr: String },
+    /// 命令参数组合非法(如 worktree_name 没配 repo_path、worktree 不存在)
+    #[error("参数无效: {0}")]
+    InvalidInput(String),
 }

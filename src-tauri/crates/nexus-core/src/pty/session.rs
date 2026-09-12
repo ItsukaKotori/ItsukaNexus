@@ -4,6 +4,7 @@
 //   - writer/killer/master:全是 Arc<Mutex<>> 共享形态,into_parts 拆给 manager
 //   - child:spawn 后立刻拆走——wait 独占给 wait 任务,kill 用 clone_killer 留在这
 use std::io::Write;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use portable_pty::{
@@ -41,11 +42,17 @@ impl PtySession {
     /// spawn 一个跑在 PTY 里的进程。
     /// 返回 (会话句柄, child):child 必须立刻交给专属任务调 wait(),
     /// 否则进程退出后无人收割(Windows 上即"僵尸句柄",spec M1 完成标准③)。
+    /// spawn 一个跑在 PTY 里的进程。
+    /// 返回 (会话句柄, child):child 必须立刻交给专属任务调 wait(),
+    /// 否则进程退出后无人收割(Windows 上即"僵尸句柄",spec M1 完成标准③)。
+    /// cwd = None 时继承本进程工作目录(M2 行为);Some 则作为子进程的
+    /// 工作目录(worktree 集成点,spec §1.4 session_create 的落点)。
     pub fn spawn(
         program: &str,
         args: &[&str],
         cols: u16,
         rows: u16,
+        cwd: Option<&Path>,
     ) -> Result<(Self, Box<dyn Child + Send>), NexusError> {
         let pty_system = NativePtySystem::default();
         let pair = pty_system
@@ -59,6 +66,9 @@ impl PtySession {
 
         let mut cmd = CommandBuilder::new(program);
         cmd.args(args);
+        if let Some(c) = cwd {
+            cmd.cwd(c);
+        }
         // 颜色/终端能力注入(spec §1.3):让 TUI 程序输出真彩 ANSI
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");

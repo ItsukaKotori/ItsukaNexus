@@ -31,15 +31,55 @@ pub struct SessionCreated {
     state: SessionState,
 }
 
+/// 创建会话。repo_path + worktree_name 同时给出时,shell 的 cwd 落在
+/// `<repo>/.nx-worktrees/<worktreeName>`(目录必须已存在,由 worktree_create
+/// 先建);两者都缺省 = 纯 shell 会话(cwd 继承本进程,快照两字段 None)。
+/// canonicalize 一并归一 macOS /var ↔ /private/var 形态;Windows verbatim
+/// 前缀(`\\?\`)对 portable-pty 的 cwd 是安全的(内部自行处理),不剥。
 #[tauri::command]
 pub async fn session_create(
     state: State<'_, SessionManager>,
     provider_id: String,
     cols: Option<u16>,
     rows: Option<u16>,
+    repo_path: Option<String>,
+    worktree_name: Option<String>,
 ) -> Result<SessionCreated, String> {
+    let launch = match (&repo_path, &worktree_name) {
+        (Some(repo), Some(name)) => {
+            let wt_dir = std::path::PathBuf::from(repo)
+                .join(".nx-worktrees")
+                .join(name);
+            let canonical = wt_dir.canonicalize().map_err(|e| {
+                nexus_core::NexusError::InvalidInput(format!(
+                    "worktree 不存在 {}: {e}",
+                    wt_dir.display()
+                ))
+                .to_string()
+            })?;
+            Some(nexus_core::agent::manager::LaunchSpec {
+                cwd: canonical,
+                repo_path: Some(repo.clone()),
+                worktree_name: Some(name.clone()),
+            })
+        }
+        (None, Some(_)) => {
+            return Err(nexus_core::NexusError::InvalidInput(
+                "指定 worktreeName 时必须同时指定 repoPath".into(),
+            )
+            .to_string());
+        }
+        // (Some, None) 与 (None, None):repo_path 单独给出没有落点语义,
+        // 与全缺省同型(M2 行为)
+        _ => None,
+    };
     let id = state
-        .create(&provider_id, cols.unwrap_or(80), rows.unwrap_or(24))
+        .create(
+            &provider_id,
+            cols.unwrap_or(80),
+            rows.unwrap_or(24),
+            launch.as_ref(),
+        )
         .await
         .map_err(|e| e.to_string())?;
     Ok(SessionCreated {
@@ -128,6 +168,17 @@ pub async fn session_stop(
         .stop(id, force.unwrap_or(false))
         .await
         .map_err(|e| e.to_string())
+}
+
+/// 会话回收(M3 "关 tab 即删"):仅终态(Exited/Failed)可删,运行中报
+/// "会话未在运行",不存在报"会话不存在";条目删除后 replay/订阅随之释放。
+#[tauri::command]
+pub async fn session_dispose(
+    state: State<'_, SessionManager>,
+    session_id: String,
+) -> Result<(), String> {
+    let id = parse_id(session_id)?;
+    state.dispose(id).map_err(|e| e.to_string())
 }
 
 /// 会话快照列表:含已退出的会话(侧边栏显示 Exited/Failed)。

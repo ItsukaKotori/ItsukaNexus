@@ -59,7 +59,9 @@ pub fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// session_list 返回元素:会话快照(退出后保留,侧边栏显示 Exited/Failed)
+/// session_list 返回元素:会话快照(退出后保留,侧边栏显示 Exited/Failed)。
+/// repo_path/worktree_name = 会话落点(spec §1.4 session_create 透传,
+/// 无 worktree 的纯 shell 会话两者皆 None)。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionSnapshot {
@@ -68,6 +70,8 @@ pub struct SessionSnapshot {
     pub started_at_ms: u64,
     pub exit_code: Option<i32>,
     pub pid: Option<u32>,
+    pub repo_path: Option<String>,
+    pub worktree_name: Option<String>,
 }
 
 #[cfg(test)]
@@ -108,12 +112,35 @@ mod tests {
             started_at_ms: 1234,
             exit_code: None,
             pid: Some(42),
+            repo_path: Some("/repo".into()),
+            worktree_name: Some("nexus/shell-1".into()),
         };
         let json = serde_json::to_string(&snap).unwrap();
         assert!(json.contains("\"sessionId\""));
         assert!(json.contains("\"startedAtMs\""));
         assert!(json.contains("\"exitCode\""));
+        assert!(json.contains("\"repoPath\""));
+        assert!(json.contains("\"worktreeName\""));
         assert!(!json.contains("session_id"), "键名必须 camelCase");
+        assert!(!json.contains("repo_path"), "键名必须 camelCase");
+        assert!(!json.contains("worktree_name"), "键名必须 camelCase");
+    }
+
+    #[test]
+    fn snapshot_worktree_fields_default_none() {
+        // 无 worktree 的纯 shell 会话:两落点字段缺省 None
+        let snap = SessionSnapshot {
+            session_id: SessionId::new(),
+            state: SessionState::Running,
+            started_at_ms: 0,
+            exit_code: None,
+            pid: None,
+            repo_path: None,
+            worktree_name: None,
+        };
+        let json = serde_json::to_string(&snap).unwrap();
+        assert!(json.contains("\"repoPath\":null"));
+        assert!(json.contains("\"worktreeName\":null"));
     }
 
     #[test]

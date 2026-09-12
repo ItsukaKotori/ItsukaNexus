@@ -9,7 +9,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use nexus_core::agent::manager::{OutputFrame, SessionEvent, SessionManager, Subscription};
+use nexus_core::agent::manager::{
+    LaunchSpec, OutputFrame, SessionEvent, SessionManager, Subscription,
+};
 use nexus_core::agent::state::SessionState;
 use nexus_core::error::NexusError;
 use nexus_core::ids::SessionId;
@@ -108,7 +110,10 @@ async fn wait_frame_contains(
 #[tokio::test]
 async fn create_shell_send_input_sees_echo() {
     let (mgr, _rx) = manager_with_channel();
-    let id = mgr.create("shell", 80, 24).await.expect("create 失败");
+    let id = mgr
+        .create("shell", 80, 24, None)
+        .await
+        .expect("create 失败");
     let sub = mgr.subscribe(id).expect("subscribe 失败");
     let mut frames = sub.rx;
 
@@ -122,7 +127,10 @@ async fn create_shell_send_input_sees_echo() {
 #[tokio::test]
 async fn stop_kills_session_and_emits_exit() {
     let (mgr, mut rx) = manager_with_channel();
-    let id = mgr.create("shell", 80, 24).await.expect("create 失败");
+    let id = mgr
+        .create("shell", 80, 24, None)
+        .await
+        .expect("create 失败");
     mgr.stop(id, true).await.expect("stop 失败");
 
     let code = wait_exit(&mut rx, id).await;
@@ -145,7 +153,10 @@ async fn stop_kills_session_and_emits_exit() {
 async fn natural_exit_emits_zero_code_and_snapshot() {
     // 自然退出:钉住"join 输出管线后再发 Exit"的不变量 + 退出后快照可查
     let (mgr, mut rx) = manager_with_channel();
-    let id = mgr.create("shell", 80, 24).await.expect("create 失败");
+    let id = mgr
+        .create("shell", 80, 24, None)
+        .await
+        .expect("create 失败");
 
     // shell 尚未就绪也没关系:输入停在 PTY 缓冲,shell 起来后照常读到
     mgr.send_input(id, "exit\n").await.expect("send 失败");
@@ -165,15 +176,15 @@ async fn natural_exit_emits_zero_code_and_snapshot() {
 #[tokio::test]
 async fn create_rejects_unknown_provider() {
     let (mgr, _rx) = manager_with_channel();
-    let err = mgr.create("claude", 80, 24).await.unwrap_err();
+    let err = mgr.create("claude", 80, 24, None).await.unwrap_err();
     assert!(matches!(err, NexusError::UnsupportedProvider(_)));
 }
 
 #[tokio::test]
 async fn two_sessions_are_independent() {
     let (mgr, _rx) = manager_with_channel();
-    let a = mgr.create("shell", 80, 24).await.unwrap();
-    let b = mgr.create("shell", 80, 24).await.unwrap();
+    let a = mgr.create("shell", 80, 24, None).await.unwrap();
+    let b = mgr.create("shell", 80, 24, None).await.unwrap();
     assert_ne!(a, b);
 
     let sub = mgr.subscribe(b).expect("subscribe b 失败");
@@ -188,7 +199,10 @@ async fn two_sessions_are_independent() {
 #[tokio::test]
 async fn create_emits_state_running_before_any_output() {
     let (mgr, mut rx) = manager_with_channel();
-    let id = mgr.create("shell", 80, 24).await.expect("create 失败");
+    let id = mgr
+        .create("shell", 80, 24, None)
+        .await
+        .expect("create 失败");
 
     // create 返回前 State{Running} 已发出:sink 队列的第一条必是它
     match next_event(&mut rx, deadline()).await {
@@ -211,7 +225,10 @@ async fn create_emits_state_running_before_any_output() {
 #[tokio::test]
 async fn subscribe_replays_history_and_keeps_seq_monotonic() {
     let (mgr, _rx) = manager_with_channel();
-    let id = mgr.create("shell", 80, 24).await.expect("create 失败");
+    let id = mgr
+        .create("shell", 80, 24, None)
+        .await
+        .expect("create 失败");
 
     // 先订阅、等历史输出落地,再换订阅验证 replay
     let first = mgr.subscribe(id).expect("subscribe 失败");
@@ -269,7 +286,10 @@ async fn subscribe_replays_history_and_keeps_seq_monotonic() {
 #[tokio::test]
 async fn slow_consumer_applies_backpressure_without_loss() {
     let (mgr, mut sink_rx) = manager_with_channel();
-    let id = mgr.create("shell", 200, 50).await.expect("create 失败");
+    let id = mgr
+        .create("shell", 200, 50, None)
+        .await
+        .expect("create 失败");
     let sub = mgr.subscribe(id).expect("subscribe 失败");
     let mut frames = sub.rx; // 持有而不消费:制造慢消费者
 
@@ -372,7 +392,10 @@ async fn attach_seam_never_duplicates() {
 
     let (mgr, mut rx) = manager_with_channel();
     let mgr = Arc::new(mgr);
-    let id = mgr.create("shell", 200, 50).await.expect("create 失败");
+    let id = mgr
+        .create("shell", 200, 50, None)
+        .await
+        .expect("create 失败");
 
     // 300 万行唯一 marker(~36MB):喂饱整条管线,让 batcher 在整个重订阅
     // 窗口内持续出帧,并把 replay 顶到 256KB 上限;`</dev/null` 防
@@ -526,7 +549,7 @@ async fn attach_seam_never_duplicates() {
 #[tokio::test]
 async fn force_stop_reaches_exit_with_grandchild_holding_slave() {
     let (mgr, mut sink_rx) = manager_with_channel();
-    let id = mgr.create("shell", 120, 30).await.unwrap();
+    let id = mgr.create("shell", 120, 30, None).await.unwrap();
     // 后台孙进程:sleep 持有 slave fd,shell 退出后它还活着
     mgr.send_input(id, "sleep 1000 &\n").await.unwrap();
     tokio::time::sleep(Duration::from_millis(800)).await;
@@ -556,7 +579,7 @@ async fn force_stop_reaches_exit_with_grandchild_holding_slave() {
 #[tokio::test]
 async fn force_stop_kills_busy_shell_foreground_job() {
     let (mgr, mut sink_rx) = manager_with_channel();
-    let id = mgr.create("shell", 120, 30).await.unwrap();
+    let id = mgr.create("shell", 120, 30, None).await.unwrap();
     mgr.send_input(id, "while :; do :; done\n").await.unwrap();
     tokio::time::sleep(Duration::from_millis(800)).await; // 等 job 进前台
     mgr.stop(id, true).await.unwrap();
@@ -571,7 +594,7 @@ async fn force_stop_kills_busy_shell_foreground_job() {
 #[tokio::test]
 async fn dispose_removes_terminal_session_only() {
     let (mgr, mut sink_rx) = manager_with_channel();
-    let id = mgr.create("shell", 80, 24).await.unwrap();
+    let id = mgr.create("shell", 80, 24, None).await.unwrap();
     assert!(
         matches!(mgr.dispose(id), Err(NexusError::SessionNotRunning(_))),
         "运行中的会话不可删"
@@ -600,11 +623,11 @@ async fn dispose_removes_terminal_session_only() {
 #[tokio::test]
 async fn list_is_sorted_by_started_at() {
     let (mgr, _sink_rx) = manager_with_channel();
-    let a = mgr.create("shell", 80, 24).await.unwrap();
+    let a = mgr.create("shell", 80, 24, None).await.unwrap();
     tokio::time::sleep(Duration::from_millis(5)).await;
-    let b = mgr.create("shell", 80, 24).await.unwrap();
+    let b = mgr.create("shell", 80, 24, None).await.unwrap();
     tokio::time::sleep(Duration::from_millis(5)).await;
-    let c = mgr.create("shell", 80, 24).await.unwrap();
+    let c = mgr.create("shell", 80, 24, None).await.unwrap();
     let snaps = mgr.list();
     assert_eq!(snaps.len(), 3, "应恰有当前三个会话");
     let times: Vec<u64> = snaps.iter().map(|s| s.started_at_ms).collect();
@@ -627,7 +650,7 @@ async fn list_is_sorted_by_started_at() {
 #[tokio::test]
 async fn send_input_to_never_reading_child_returns_promptly() {
     let (mgr, mut sink_rx) = manager_with_channel();
-    let id = mgr.create("shell", 80, 24).await.unwrap();
+    let id = mgr.create("shell", 80, 24, None).await.unwrap();
     let sub = mgr.subscribe(id).expect("subscribe 失败");
     let mut frames = sub.rx;
     mgr.send_input(id, "echo READY-$((41+1)) && exec sleep 1000\n")
@@ -655,7 +678,7 @@ async fn send_input_to_never_reading_child_returns_promptly() {
 #[tokio::test]
 async fn subscribe_terminal_session_replays_history_and_closes_stream() {
     let (mgr, mut sink_rx) = manager_with_channel();
-    let id = mgr.create("shell", 80, 24).await.unwrap();
+    let id = mgr.create("shell", 80, 24, None).await.unwrap();
     mgr.send_input(id, "echo marker-term-sub-9\n")
         .await
         .unwrap();
@@ -675,4 +698,47 @@ async fn subscribe_terminal_session_replays_history_and_closes_stream() {
         matches!(closed, Ok(None)),
         "终态订阅的实时流必须立即关闭,实际 {closed:?}"
     );
+}
+
+/// M3 Task 9:LaunchSpec 的 cwd 落点——子进程必须真的 spawn 在给定目录里
+/// (worktree 集成的全部秘密就是 CommandBuilder 的那一行 cwd)。launch 未带
+/// repo_path/worktree_name 时快照两字段为 None(纯 shell 落点)。
+#[tokio::test]
+async fn create_with_cwd_spawns_in_worktree_like_dir() {
+    let (mgr, mut sink_rx) = manager_with_channel();
+    let dir = tempfile::tempdir().unwrap();
+    let spec = LaunchSpec {
+        cwd: dir.path().to_path_buf(),
+        repo_path: None,
+        worktree_name: None,
+    };
+    let id = mgr.create("shell", 80, 24, Some(&spec)).await.unwrap();
+    let sub = mgr.subscribe(id).expect("subscribe 失败");
+    let mut frames = sub.rx;
+
+    // shell 就绪时间不定:输入停在 PTY 缓冲,起来后照常读到;canonicalize
+    // 两侧归一(macOS /var ↔ /private/var)
+    mgr.send_input(id, "pwd\n").await.expect("send 失败");
+    let expected = dir
+        .path()
+        .canonicalize()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    wait_frame_contains(&mut frames, &expected).await;
+
+    let snap = mgr
+        .list()
+        .into_iter()
+        .find(|s| s.session_id == id)
+        .expect("会话应在表中");
+    assert!(
+        snap.repo_path.is_none() && snap.worktree_name.is_none(),
+        "launch 未带 repo/worktree 时快照两字段应为 None,实际 {snap:?}"
+    );
+
+    // 收尾:强杀 + 等 Exit(防泄漏)
+    mgr.stop(id, true).await.expect("stop 失败");
+    let code = wait_exit(&mut sink_rx, id).await;
+    assert_ne!(code, 0, "被强杀的 shell 退出码应非 0");
 }

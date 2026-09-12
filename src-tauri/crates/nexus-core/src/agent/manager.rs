@@ -16,6 +16,7 @@
 // 跨越 .await / sink 回调(需要跨点的值先 clone 出来再放锁)。
 use std::collections::HashMap;
 use std::io::Read;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -85,6 +86,16 @@ pub struct OutputFrame {
 pub struct Subscription {
     pub replay: String,
     pub rx: mpsc::Receiver<OutputFrame>,
+}
+
+/// 会话落点(spec §1.4 session_create 的 repo_path/worktree_name 消费端)。
+/// cwd 是 PTY 子进程的工作目录(worktree 目录即落这里);repo_path/
+/// worktree_name 原样透传进快照,前端据它标记 tab 的 worktree 归属。
+#[derive(Debug, Clone)]
+pub struct LaunchSpec {
+    pub cwd: PathBuf,
+    pub repo_path: Option<String>,
+    pub worktree_name: Option<String>,
 }
 
 /// 瘦句柄:表里存它,任务树/调用方共享其中的 Arc。Clone 便宜(Arc + 快照)。
@@ -216,12 +227,16 @@ impl SessionManager {
     }
 
     /// spawn 一个 shell 会话,拉起三段任务树,入表后发 State{Running}。
-    /// 注意:本函数不 await 任何东西,async 是与 IPC 层(Task 6)的签名契约。
+    /// launch = Some 时子进程 cwd 落在该目录(worktree 集成点),repo_path/
+    /// worktree_name 透传进快照;None = M2 行为(继承本进程 cwd,快照两字段
+    /// 为 None)。注意:本函数不 await 任何东西,async 是与 IPC 层(Task 6)
+    /// 的签名契约。
     pub async fn create(
         &self,
         provider_id: &str,
         cols: u16,
         rows: u16,
+        launch: Option<&LaunchSpec>,
     ) -> Result<SessionId, NexusError> {
         if provider_id != "shell" {
             return Err(NexusError::UnsupportedProvider(provider_id.to_string()));
@@ -229,7 +244,13 @@ impl SessionManager {
         let id = SessionId::new();
         // take_reader 内部的 expect 是 panic 路径,前提是 master 存活——
         // 这里 session 刚 spawn、master 尚未 drop/关闭,前提成立(继承 M1 注记)。
-        let (session, child) = PtySession::spawn(&default_shell(), &[], cols, rows)?;
+        let (session, child) = PtySession::spawn(
+            &default_shell(),
+            &[],
+            cols,
+            rows,
+            launch.map(|l| l.cwd.as_path()),
+        )?;
         let reader = session.take_reader();
         let parts = session.into_parts();
         let pid = child.process_id();
@@ -362,6 +383,8 @@ impl SessionManager {
                 started_at_ms: now_ms(),
                 exit_code: None,
                 pid,
+                repo_path: launch.and_then(|l| l.repo_path.clone()),
+                worktree_name: launch.and_then(|l| l.worktree_name.clone()),
             },
             replay,
             subscriber,

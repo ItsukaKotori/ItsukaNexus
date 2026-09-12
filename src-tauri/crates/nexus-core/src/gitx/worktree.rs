@@ -36,6 +36,16 @@ impl WorktreeManager {
         Self { ops, events }
     }
 
+    /// 探测系统 git(IPC 层 worktree 三命令的入口 gate 也走这里)。
+    pub async fn check(&self) -> super::ops::GitCheckInfo {
+        self.ops.check().await
+    }
+
+    /// 校验 path 是 git 仓库并返回 RepoInfo(委托 ops,manager 不重复实现)。
+    pub async fn validate_repo(&self, path: &Path) -> Result<super::ops::RepoInfo, NexusError> {
+        self.ops.validate_repo(path).await
+    }
+
     /// 创建 nexus 命名规范的 worktree(分支 = 目录 = name):
     /// `git worktree add -b <name> <repo>/.nx-worktrees/<name> [base_ref]`,
     /// 成功后 emit Created。
