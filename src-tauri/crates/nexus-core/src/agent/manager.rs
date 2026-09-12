@@ -48,6 +48,10 @@ const GRACE_PERIOD: Duration = Duration::from_secs(2);
 /// 写超时不直接 kill,而是放弃这次写入、照常走宽限轮询:子进程若在写超时
 /// 窗口内自行退出则免杀更优;全程最坏 ~2s(写)+ ~2s(宽限)有界
 const CTRL_C_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
+/// send_input 的写超时(必办#3):大粘贴 + 子进程不读 → write 阻塞。
+/// 与 stop 的 Ctrl-C 写超时同型:超时放弃等待,spawn_blocking 线程随写入
+/// 最终完成/失败自然收场(最多泄漏一个,进程退出兜底)。
+const SEND_INPUT_TIMEOUT: Duration = Duration::from_secs(2);
 /// 优雅关停轮询间隔(状态迁移的真正通知由 wait 任务驱动,这里只是等它)
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
 
@@ -154,6 +158,38 @@ impl Inner {
 
 pub struct SessionManager {
     inner: Arc<Inner>,
+}
+
+/// 带超时的写路径(必办#3,send_input 复用):write_all/flush 丢进阻塞线程
+/// 池别扣住执行器;超时只是"放弃等待并报错"——被弃置的 spawn_blocking 线程
+/// 仍在写(线程无法安全杀),持有 writer 锁直到写入最终完成/失败,锁竞争由
+/// stop 路径自己的写超时兜底。超时后最多滞留一个阻塞线程,进程退出兜底。
+async fn write_with_timeout(
+    writer: Arc<Mutex<Box<dyn std::io::Write + Send>>>,
+    bytes: Vec<u8>,
+    timeout: Duration,
+) -> Result<(), NexusError> {
+    match tokio::time::timeout(
+        timeout,
+        tokio::task::spawn_blocking(move || -> Result<(), NexusError> {
+            let mut w = writer.lock().map_err(|e| {
+                NexusError::Pty(std::io::Error::other(format!("writer 被毒化: {e}")))
+            })?;
+            w.write_all(&bytes)?;
+            w.flush()?;
+            Ok(())
+        }),
+    )
+    .await
+    {
+        Ok(Ok(res)) => res,
+        Ok(Err(e)) => Err(NexusError::Pty(std::io::Error::other(format!(
+            "写任务失败: {e}"
+        )))),
+        Err(_) => Err(NexusError::Pty(std::io::Error::other(format!(
+            "写超时({timeout:?}):子进程未消费输入(可能已停止读取)"
+        )))),
+    }
 }
 
 /// 默认 shell:优先 $SHELL,逐级 fallback。
@@ -304,6 +340,12 @@ impl SessionManager {
             };
             // 先写状态再发 Exit:收到 Exit 时 list() 必已可见终态(测试钉住)
             inner.set_state(id, next, Some(code), detail);
+            // 终态断订阅(必办#2):常驻转发任务在存量耗尽后自然结束,
+            // 退出会话不再占订阅通道;条目与 replay 保留(刷新恢复仍可看)。
+            // 锁序 表锁→订阅锁,持锁只做置 None,不跨 await/sink(文件头约定)
+            if let Some(h) = inner.sessions.lock().expect("会话表锁被毒化").get_mut(&id) {
+                *h.subscriber.lock().expect("订阅锁") = None;
+            }
             (inner.sink)(SessionEvent::Exit {
                 session_id: id,
                 code,
@@ -353,6 +395,18 @@ impl SessionManager {
         let handle = guard
             .get_mut(&id)
             .ok_or_else(|| NexusError::SessionNotFound(id.to_string()))?;
+        // 终态:batcher 已退出,不会再有帧。返回已关闭的 rx(drop 发送端),
+        // IPC 转发任务 recv 即 None 自然收尾——刷新恢复时 attach 已退出会话
+        // 不再泄漏常驻转发任务;replay 照常重放历史。
+        if matches!(
+            handle.snapshot.state,
+            SessionState::Exited | SessionState::Failed
+        ) {
+            let replay = handle.replay.lock().expect("replay 锁").snapshot();
+            let (_tx, rx) = mpsc::channel(1);
+            drop(_tx);
+            return Ok(Subscription { replay, rx });
+        }
         let (tx, rx) = mpsc::channel(SUBSCRIBER_DEPTH);
         // 接缝原子化(I-1):持订阅锁期间完成 snapshot+替换(锁序 subscriber→
         // replay),与 batcher 的 push+clone 临界段互斥——snapshot 只含已 push
@@ -380,21 +434,7 @@ impl SessionManager {
         }; // 表锁在此释放
         let bytes = data.as_bytes().to_vec();
         // 大粘贴 + 子进程不读 = write 可能长时间阻塞:丢进阻塞线程池,别扣住执行器
-        match tokio::task::spawn_blocking(move || -> Result<(), NexusError> {
-            let mut w = writer.lock().map_err(|e| {
-                NexusError::Pty(std::io::Error::other(format!("writer 被毒化: {e}")))
-            })?;
-            w.write_all(&bytes)?;
-            w.flush()?;
-            Ok(())
-        })
-        .await
-        {
-            Ok(res) => res,
-            Err(e) => Err(NexusError::Pty(std::io::Error::other(format!(
-                "写任务失败: {e}"
-            )))),
-        }
+        write_with_timeout(writer, bytes, SEND_INPUT_TIMEOUT).await
     }
 
     pub fn resize(&self, id: SessionId, cols: u16, rows: u16) -> Result<(), NexusError> {
@@ -503,14 +543,102 @@ impl SessionManager {
         Ok(())
     }
 
-    /// 会话快照列表:含已退出的会话(侧边栏显示 Exited/Failed)
+    /// 会话回收(必办#2,"关 tab 即删"):仅终态可删。
+    /// drop 条目 = 释放 replay/订阅/句柄/取消令牌的全部 Arc(RAII),
+    /// 无需显式 close——所有权即资源管理;运行中 → SessionNotRunning,
+    /// 不存在 → SessionNotFound。
+    pub fn dispose(&self, id: SessionId) -> Result<(), NexusError> {
+        let mut guard = self.inner.sessions.lock().expect("会话表锁被毒化");
+        let handle = guard
+            .get(&id)
+            .ok_or_else(|| NexusError::SessionNotFound(id.to_string()))?;
+        if !matches!(
+            handle.snapshot.state,
+            SessionState::Exited | SessionState::Failed
+        ) {
+            return Err(NexusError::SessionNotRunning(id.to_string()));
+        }
+        guard.remove(&id);
+        Ok(())
+    }
+
+    /// 会话快照列表:含已退出的会话(侧边栏显示 Exited/Failed),
+    /// 按 startedAtMs 升序(必办#3:HashMap 无序,刷新后 tab 序要稳定)
     pub fn list(&self) -> Vec<SessionSnapshot> {
-        self.inner
+        let mut snaps: Vec<SessionSnapshot> = self
+            .inner
             .sessions
             .lock()
             .expect("会话表锁被毒化")
             .values()
             .map(|h| h.snapshot.clone())
-            .collect()
+            .collect();
+        snaps.sort_by_key(|s| s.started_at_ms);
+        snaps
+    }
+}
+
+#[cfg(test)]
+mod write_timeout_tests {
+    use super::*;
+
+    /// write_all 永不完成的写端:模拟"子进程不读、PTY 输入缓冲满"(Linux
+    /// n_tty 会阻塞 master 写;macOS xnu 不阻塞,故超时路径用 mock 钉住)。
+    /// 阻塞用 channel 门而非 sleep:超时弃置的 spawn_blocking 线程要等
+    /// runtime 关停时收割,sleep 型 mock 会把整个测试二进制钉在关停上;
+    /// 测试断言完显式放行,写线程即刻自然收场
+    struct BlockedWriter(std::sync::mpsc::Receiver<()>);
+    impl std::io::Write for BlockedWriter {
+        fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+            let _ = self.0.recv(); // 阻塞直到测试放行
+            Ok(5)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// 立即完成的写端:守卫"快速写不得误报超时"
+    struct InstantWriter;
+    impl std::io::Write for InstantWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn write_times_out_when_writer_never_completes() {
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let writer: Arc<Mutex<Box<dyn std::io::Write + Send>>> =
+            Arc::new(Mutex::new(Box::new(BlockedWriter(release_rx))));
+        let start = std::time::Instant::now();
+        let r = write_with_timeout(writer, b"hello".to_vec(), Duration::from_millis(100)).await;
+        let elapsed = start.elapsed();
+        let err = r.expect_err("永不完成的写必须在超时窗后报错");
+        assert!(
+            matches!(err, NexusError::Pty(_)),
+            "超时错误应为 Pty: {err:?}"
+        );
+        assert!(
+            elapsed >= Duration::from_millis(100),
+            "必须等满超时窗,实际 {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "超时必须及时返回而非挂死,实际 {elapsed:?}"
+        );
+        // 先放行被弃置的写线程,再让 runtime 关停收割它(顺序即防钉死)
+        drop(release_tx);
+    }
+
+    #[tokio::test]
+    async fn write_succeeds_when_writer_is_fast() {
+        let writer: Arc<Mutex<Box<dyn std::io::Write + Send>>> =
+            Arc::new(Mutex::new(Box::new(InstantWriter)));
+        let r = write_with_timeout(writer, b"hello".to_vec(), Duration::from_millis(100)).await;
+        assert!(r.is_ok(), "快速写端不得误报超时: {r:?}");
     }
 }

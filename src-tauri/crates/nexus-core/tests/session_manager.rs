@@ -53,6 +53,12 @@ async fn recv_with_deadline(rx: &mut EventRx, total: Duration) -> Option<Session
     }
 }
 
+/// drain 事件流直到 id 的 Exit(复用 wait_exit 的有界等待:超时即 panic,
+/// 断言不弱化);退出码由调用方按场景自行断言
+async fn drain_until_exit(rx: &mut EventRx, id: SessionId) {
+    wait_exit(rx, id).await;
+}
+
 /// deadline 内收一条事件;超时/通道关闭即 panic
 async fn next_event(rx: &mut EventRx, dl: tokio::time::Instant) -> SessionEvent {
     let now = tokio::time::Instant::now();
@@ -558,4 +564,115 @@ async fn force_stop_kills_busy_shell_foreground_job() {
         .await
         .expect("busy shell 场景 Exit 也必须到达");
     assert!(matches!(ev, SessionEvent::Exit { .. }));
+}
+
+/// 必办#2:dispose 关 tab 即删——仅终态(Exited/Failed)可删、运行中拒绝、
+/// 删后条目消失(后续 send_input/dispose 报 SessionNotFound)
+#[tokio::test]
+async fn dispose_removes_terminal_session_only() {
+    let (mgr, mut sink_rx) = manager_with_channel();
+    let id = mgr.create("shell", 80, 24).await.unwrap();
+    assert!(
+        matches!(mgr.dispose(id), Err(NexusError::SessionNotRunning(_))),
+        "运行中的会话不可删"
+    );
+    // 自然退出
+    mgr.send_input(id, "exit\n").await.unwrap();
+    drain_until_exit(&mut sink_rx, id).await;
+    mgr.dispose(id).unwrap();
+    assert!(mgr.list().is_empty(), "dispose 后 list 应为空");
+    assert!(
+        matches!(
+            mgr.send_input(id, "x").await,
+            Err(NexusError::SessionNotFound(_))
+        ),
+        "dispose 后 send_input 应报 SessionNotFound"
+    );
+    assert!(
+        matches!(mgr.dispose(id), Err(NexusError::SessionNotFound(_))),
+        "dispose 后再 dispose 应报 SessionNotFound"
+    );
+}
+
+/// 必办#3-a:list 按 startedAtMs 升序(刷新后 tab 序稳定)。HashMap 无序,
+/// 不排序时三条快照的相对次序随每次运行漂移;5ms 间隔保证 started_at_ms
+/// 严格递增,逐位断言 snaps[0]=a、snaps[1]=b、snaps[2]=c
+#[tokio::test]
+async fn list_is_sorted_by_started_at() {
+    let (mgr, _sink_rx) = manager_with_channel();
+    let a = mgr.create("shell", 80, 24).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    let b = mgr.create("shell", 80, 24).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    let c = mgr.create("shell", 80, 24).await.unwrap();
+    let snaps = mgr.list();
+    assert_eq!(snaps.len(), 3, "应恰有当前三个会话");
+    let times: Vec<u64> = snaps.iter().map(|s| s.started_at_ms).collect();
+    let mut sorted = times.clone();
+    sorted.sort_unstable();
+    assert_eq!(times, sorted, "list 必须按 startedAtMs 升序");
+    assert_eq!(snaps[0].session_id, a, "最早的会话排最前");
+    assert_eq!(snaps[1].session_id, b, "中间建的排中间");
+    assert_eq!(snaps[2].session_id, c, "最晚的会话排最后(修正断言)");
+}
+
+/// 必办#3-b(集成面):巨量输入写给不读输入的子进程,send_input 必须有界
+/// 返回、绝不挂死 invoke。就绪判定用"算术 marker"(`$((41+1))` → 输出
+/// READY-42)而非固定 sleep:输入回显是逐字的命令原文(不含 READY-42),
+/// 匹配到 READY-42 即证明 ZLE 已读走并执行了命令行;`exec sleep 1000` 后
+/// shell 已被替换、前台 sleep 不读 stdin——此后 tty 输入队列再无读者。
+/// 结果值不断言 Err:macOS xnu 不因输入队列满阻塞 master 写(实测 16MB
+/// 即时成功),只有 Linux n_tty 阻塞写端走 2s 超时报错——错误路径由
+/// manager 的 NeverWriter 单测钉住,这里钉平台无关的"及时返回"属性
+#[tokio::test]
+async fn send_input_to_never_reading_child_returns_promptly() {
+    let (mgr, mut sink_rx) = manager_with_channel();
+    let id = mgr.create("shell", 80, 24).await.unwrap();
+    let sub = mgr.subscribe(id).expect("subscribe 失败");
+    let mut frames = sub.rx;
+    mgr.send_input(id, "echo READY-$((41+1)) && exec sleep 1000\n")
+        .await
+        .unwrap();
+    wait_frame_contains(&mut frames, "READY-42").await;
+    drop(frames); // 就绪后不再消费:避免后续输出(若有)把订阅通道灌满
+    let big = "x".repeat(512 * 1024); // 512KB,远超 PTY 输入缓冲
+    let start = std::time::Instant::now();
+    let r = mgr.send_input(id, &big).await;
+    assert!(
+        start.elapsed() < Duration::from_secs(6),
+        "必须及时返回,不能挂死"
+    );
+    // Ok(macOS 吸收输入)与 Err(Linux 写超时)都是合法结局
+    let _ = r;
+    // 收尾:强杀 + 等 Exit(防泄漏;被超时弃置的阻塞写线程随进程退出兜底)
+    mgr.stop(id, true).await.unwrap();
+    let code = wait_exit(&mut sink_rx, id).await;
+    assert_ne!(code, 0, "被强杀的 shell 退出码应非 0");
+}
+
+/// 必办#2:终态会话 subscribe——replay 照常重放历史,实时流 rx 立即关闭
+/// (已关闭 channel:drop 发送端,IPC 转发任务 recv 即 None 自然收尾不泄漏)
+#[tokio::test]
+async fn subscribe_terminal_session_replays_history_and_closes_stream() {
+    let (mgr, mut sink_rx) = manager_with_channel();
+    let id = mgr.create("shell", 80, 24).await.unwrap();
+    mgr.send_input(id, "echo marker-term-sub-9\n")
+        .await
+        .unwrap();
+    mgr.send_input(id, "exit\n").await.unwrap();
+    drain_until_exit(&mut sink_rx, id).await;
+
+    let sub = mgr.subscribe(id).expect("终态 subscribe 应成功");
+    assert!(
+        sub.replay.contains("marker-term-sub-9"),
+        "终态 replay 应照常重放历史,实际 {:?}",
+        sub.replay
+    );
+    // rx 已关闭:recv 立即返回 None(mpsc 优雅关闭语义;500ms 上限防挂)
+    let mut rx = sub.rx;
+    let closed = tokio::time::timeout(Duration::from_millis(500), rx.recv()).await;
+    assert!(
+        matches!(closed, Ok(None)),
+        "终态订阅的实时流必须立即关闭,实际 {closed:?}"
+    );
 }
