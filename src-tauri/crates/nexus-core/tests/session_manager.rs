@@ -487,8 +487,10 @@ async fn attach_seam_never_duplicates() {
 async fn force_stop_reaches_exit_with_grandchild_holding_slave() {
     let (mgr, mut sink_rx) = manager_with_channel();
     let id = mgr.create("shell", 120, 30, None).await.unwrap();
-    // 后台孙进程:sleep 持有 slave fd,shell 退出后它还活着
-    mgr.send_input(id, "sleep 1000 &\n").await.unwrap();
+    // 后台孙进程:sleep 持有 slave fd,shell 退出后它还活着。时长取
+    // 987654 秒(≈11 天,现实中无人真跑完)并兼作唯一 token:收尾 pkill
+    // 按完整命令行精确匹配,只可能命中本测试自己种的这颗,零误伤
+    mgr.send_input(id, "sleep 987654 &\n").await.unwrap();
     tokio::time::sleep(Duration::from_millis(800)).await;
     mgr.stop(id, true).await.unwrap();
     // Exit 必须在 JOIN_TIMEOUT(5s) 的正常路径内到达:给 4s 上限,留余量
@@ -509,6 +511,18 @@ async fn force_stop_reaches_exit_with_grandchild_holding_slave() {
         nexus_core::agent::state::SessionState::Exited
             | nexus_core::agent::state::SessionState::Failed
     ));
+
+    // 收尾清理(所有断言已完成):killpg 只覆盖前台组,上面这个后台 sleep
+    // 被放过、存活且持 slave fd —— Linux 上 master read 会阻塞到 slave 全
+    // 关,而 #[tokio::test] 的 runtime drop 必须 join 阻塞中的读线程,测试
+    // 二进制会一路挂到 sleep 自然退出(Linux CI 曾因此整 job 20 分钟超时;
+    // macOS 因 session leader 退出即撤销 PTY 而幸免)。pkill 掉唯一 token
+    // 的 sleep:slave 全关 → 读线程返回 → join 立即完成,测试干净退出。
+    // 结果忽略:进程若已意外退出,pkill 返回非零,无害;顺带消掉开发机上
+    // 的进程泄漏
+    let _ = std::process::Command::new("pkill")
+        .args(["-f", "sleep 987654"])
+        .status();
 }
 
 /// 必办#1-b:kill 正忙 shell(前台死循环 job 在独立进程组)——M2 实测

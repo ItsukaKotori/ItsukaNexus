@@ -2,6 +2,7 @@
 // 覆盖完成标准⑥:含空格/中文的 repo 路径。
 mod common;
 
+use std::ffi::OsStr;
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -54,7 +55,25 @@ async fn create_list_remove_roundtrip() {
     let base = base.canonicalize().unwrap_or(base);
     assert!(info.path.starts_with(base));
     assert!(info.path.is_dir(), "worktree 目录应存在");
-    assert!(info.path.to_string_lossy().contains(&info.name));
+    // 跨平台断言(Windows 断言不可写字面 contains):name 含 '/'
+    // (nexus/shell-…),Windows 路径分隔符是 '\',字面子串必失败。改按
+    // 结构比:目录最后一段 == name 尾段,且路径落在 .nx-worktrees 之下
+    // (canonicalize 后可能是 /private/var 或 \\?\ 前缀形态,逐 component
+    // 比较与分隔符无关,三平台同义)
+    let leaf = info.name.as_str().rsplit('/').next().unwrap();
+    assert_eq!(
+        info.path.file_name().unwrap(),
+        OsStr::new(leaf),
+        "worktree 目录最后一段应与 name 尾段一致:{:?}",
+        info.path
+    );
+    assert!(
+        info.path
+            .components()
+            .any(|c| c.as_os_str() == OsStr::new(".nx-worktrees")),
+        "worktree 应位于 .nx-worktrees 下:{:?}",
+        info.path
+    );
     // 分支存在(rev-parse --verify)
     let st = Command::new("git")
         .arg("-C")
