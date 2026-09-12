@@ -59,9 +59,12 @@ export default function TerminalPane({ sessionId, onFitted }: Props) {
   }, [sessionId]);
 
   return (
-    <div
-      ref={containerRef}
-      style={{ width: "100%", height: "100%", minWidth: 0, minHeight: 0 }}
-    />
+    // 外层 relative:为 Task 10 的会话退出遮罩预留绝对定位挂点(本任务不做遮罩)
+    <div className="relative h-full w-full min-h-0 min-w-0">
+      <div
+        ref={containerRef}
+        className="h-full w-full min-h-0 min-w-0"
+      />
+    </div>
   );
 }

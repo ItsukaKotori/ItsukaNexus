@@ -3,6 +3,8 @@
 // 状态经全局事件驱动 store,React 只负责壳(spec §1.5)。
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { Button } from "@/components/ui/button";
+
 import TerminalPane from "./features/terminal/TerminalPane";
 import TerminalTabs from "./features/terminal/TerminalTabs";
 import {
@@ -133,33 +135,18 @@ function App() {
   const sessionIds = Object.keys(sessions);
 
   return (
-    <main
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        height: "100vh",
-        fontFamily: "system-ui",
-      }}
-    >
-      <header
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 12,
-          padding: "8px 16px",
-          borderBottom: "1px solid #ddd",
-        }}
-      >
+    <main className="flex h-screen flex-col">
+      <header className="flex items-center gap-3 border-b px-4 py-2">
         <strong>ItsukaNexus</strong>
         {info && (
-          <span style={{ color: "#888", fontSize: 13 }}>
+          <span className="text-[13px] text-muted-foreground">
             v{info.version} · {info.platform}
           </span>
         )}
-        <span style={{ flex: 1 }} />
-        <button type="button" onClick={handleNew}>
+        <span className="flex-1" />
+        <Button size="sm" onClick={handleNew}>
           新建会话
-        </button>
+        </Button>
       </header>
 
       <TerminalTabs
@@ -169,37 +156,24 @@ function App() {
         onClose={handleClose}
       />
 
-      <div style={{ flex: 1, minHeight: 0, padding: 4 }}>
+      <div className="min-h-0 flex-1 p-1">
         {sessionIds.map((id) => (
           <div
             key={id}
-            style={{
-              width: "100%",
-              height: "100%",
-              display: id === activeId ? "block" : "none",
-            }}
+            className={id === activeId ? "block h-full w-full" : "hidden"}
           >
             <TerminalPane sessionId={id} onFitted={handleFitted} />
           </div>
         ))}
         {sessionIds.length === 0 && (
-          <div
-            style={{
-              height: "100%",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: "#9ca3af",
-              fontSize: 14,
-            }}
-          >
+          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
             暂无会话——点右上角「新建会话」开始
           </div>
         )}
       </div>
 
       {error && (
-        <footer style={{ color: "red", padding: "4px 16px", fontSize: 13 }}>
+        <footer className="bg-destructive/10 px-4 py-1 text-sm text-red-400">
           {error}
         </footer>
       )}
