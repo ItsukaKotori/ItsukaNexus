@@ -26,8 +26,9 @@ pub struct RepoInfo {
     pub is_clean: bool,
 }
 
-/// `git worktree list` 的一项。name 取路径末段(UI 展示用),
-/// branch 为 None 表示该 worktree 处于 detached HEAD。
+/// `git worktree list` 的一项。name = 分支名(nexus 命名规范下的 worktree),
+/// 外建 worktree 无分支(detached)时用目录名兜底;branch 为 None 即 detached。
+/// path 为 git 输出的仓库级真实路径(已含符号链接解析)。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorktreeInfo {

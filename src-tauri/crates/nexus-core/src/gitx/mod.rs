@@ -2,4 +2,7 @@
 // trait 缝留给未来的 git2 读实现。
 pub mod cli;
 pub mod ops;
-// pub mod worktree; // Task 8 落地:WorktreeManager + worktree 三方法实现;届时打开此行
+/// epoch 秒 → "yyMMdd-HHmmss"(UTC):worktree 命名的时间段,无依赖手写。
+pub mod timefmt;
+/// WorktreeManager:命名规范 + 路径决策 + 增删查编排 + worktree 变更事件缝。
+pub mod worktree;

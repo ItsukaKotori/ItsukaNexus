@@ -148,35 +148,137 @@ impl GitOps for GitCliOps {
         })
     }
 
-    // ---- worktree 三方法:Task 8 落地 ----
-    // trait 一次定型、占位用 unimplemented!():Task 7 的测试不触达它们。
+    // ---- worktree 三方法(Task 8)----
 
-    async fn worktree_list(&self, _repo: &Path) -> Result<Vec<WorktreeInfo>, NexusError> {
-        unimplemented!("Task 8 落地")
+    async fn worktree_list(&self, repo: &Path) -> Result<Vec<WorktreeInfo>, NexusError> {
+        let out = self
+            .run(Some(repo), &["worktree", "list", "--porcelain"])
+            .await?;
+        Ok(parse_worktree_porcelain(&out))
     }
 
     async fn worktree_create(
         &self,
-        _repo: &Path,
-        _name: &str,
-        _base_ref: Option<&str>,
+        repo: &Path,
+        name: &str,
+        base_ref: Option<&str>,
     ) -> Result<(), NexusError> {
-        unimplemented!("Task 8 落地")
+        // 路径决策在 manager 也有一份(返回给调用方);这里保持一致:
+        // <repo>/.nx-worktrees/<name>,name 内含 '/' 由 git 创建中间目录。
+        let path = repo.join(".nx-worktrees").join(name);
+        let path_str = path.to_string_lossy().into_owned();
+        let mut args: Vec<&str> = vec!["worktree", "add", "-b", name, &path_str];
+        if let Some(b) = base_ref {
+            args.push(b);
+        }
+        self.run(Some(repo), &args).await?;
+        Ok(())
     }
 
     async fn worktree_remove(
         &self,
-        _repo: &Path,
-        _path: &Path,
-        _delete_branch: bool,
+        repo: &Path,
+        path: &Path,
+        delete_branch: bool,
     ) -> Result<(), NexusError> {
-        unimplemented!("Task 8 落地")
+        // 分支名要在移除前查(移除后 git 不再认识该 worktree)。
+        // delete_branch 失败不致命:分支可能已被人删/已被合并删除,警告即可。
+        let branch = self.worktree_branch_of(repo, path).await;
+        self.run(Some(repo), &["worktree", "remove", &path.to_string_lossy()])
+            .await?;
+        if delete_branch {
+            if let Some(b) = branch {
+                if let Err(e) = self.run(Some(repo), &["branch", "-D", &b]).await {
+                    log::warn!("分支 {b} 删除失败(可能已不存在): {e}");
+                }
+            }
+        }
+        // prune 吸收失败:残留元数据无害
+        let _ = self.run(Some(repo), &["worktree", "prune"]).await;
+        Ok(())
     }
+}
+
+impl GitCliOps {
+    /// 从 porcelain 列表反查 path 处 worktree 的分支名(路径比较两边归一:
+    /// macOS /var ↔ /private/var、Windows verbatim 前缀,canonicalize 幂等)。
+    async fn worktree_branch_of(&self, repo: &Path, path: &Path) -> Option<String> {
+        let out = self
+            .run(Some(repo), &["worktree", "list", "--porcelain"])
+            .await
+            .ok()?;
+        let target = normalize_existing(path);
+        parse_worktree_porcelain(&out)
+            .into_iter()
+            .find(|w| normalize_existing(&w.path) == target)
+            .and_then(|w| w.branch)
+    }
+}
+
+/// 路径比较的归一:存在则 canonicalize,不存在则原样(退化为字面量比较)。
+fn normalize_existing(p: &Path) -> PathBuf {
+    p.canonicalize().unwrap_or_else(|_| p.to_path_buf())
+}
+
+/// porcelain 契约:块以空行分隔;行关键词 worktree/HEAD/branch/bare/detached。
+/// 只认关键词,未知行跳过(git 小版本变动不炸);bare 块跳过。
+/// 整行取路径:含空格/中文的 repo 路径不受列位置猜测影响。
+pub(crate) fn parse_worktree_porcelain(out: &str) -> Vec<WorktreeInfo> {
+    let mut result = Vec::new();
+    let mut path: Option<PathBuf> = None;
+    let mut branch: Option<String> = None;
+    let mut bare = false;
+    let flush = |path: &mut Option<PathBuf>,
+                 branch: &mut Option<String>,
+                 bare: &mut bool,
+                 result: &mut Vec<WorktreeInfo>| {
+        if let Some(p) = path.take() {
+            if !*bare {
+                // branch 存短名(去 refs/heads/ 前缀):与 name 同源(spec §1.3
+                // name == 分支名 == 目录名),也与 RepoInfo::current_branch 一致;
+                // `git branch -D` 只吃短名,全限定 ref 反而不认。
+                let short = branch
+                    .as_deref()
+                    .map(|b| b.trim_start_matches("refs/heads/").to_string())
+                    .filter(|b| !b.is_empty());
+                let name = short
+                    .clone()
+                    .or_else(|| p.file_name().map(|f| f.to_string_lossy().into_owned()))
+                    .unwrap_or_default();
+                result.push(WorktreeInfo {
+                    name,
+                    path: p,
+                    branch: short,
+                });
+            }
+        }
+        *branch = None;
+        *bare = false;
+    };
+    for line in out.lines() {
+        if line.is_empty() {
+            flush(&mut path, &mut branch, &mut bare, &mut result);
+            continue;
+        }
+        if let Some(p) = line.strip_prefix("worktree ") {
+            flush(&mut path, &mut branch, &mut bare, &mut result);
+            path = Some(PathBuf::from(p));
+        } else if let Some(b) = line.strip_prefix("branch ") {
+            branch = Some(b.to_string());
+        } else if line == "bare" {
+            bare = true;
+        }
+        // HEAD/detached/locked/prunable 等:本场景不需要,跳过
+    }
+    flush(&mut path, &mut branch, &mut bare, &mut result);
+    result
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_version, supports_worktree};
+    use std::path::Path;
+
+    use super::{parse_version, parse_worktree_porcelain, supports_worktree};
 
     #[test]
     fn parse_version_extracts_version_token() {
@@ -211,5 +313,62 @@ mod tests {
         assert!(!supports_worktree("2.19.4"));
         assert!(!supports_worktree("2.7.0"));
         assert!(!supports_worktree("1.9.0"));
+    }
+
+    #[test]
+    fn parse_porcelain_standard_two_worktrees() {
+        // 标准输出快照:主 worktree + 一个 nexus worktree;主 repo 路径含空格
+        let out = "\
+worktree /tmp/repo with space
+HEAD 6cf78bbf16892e48ecef12a92d66d98c7c938453
+branch refs/heads/main
+
+worktree /tmp/repo with space/.nx-worktrees/nexus/shell-231114-221320-ab12
+HEAD 6cf78bbf16892e48ecef12a92d66d98c7c938453
+branch refs/heads/nexus/shell-231114-221320-ab12
+";
+        let ws = parse_worktree_porcelain(out);
+        assert_eq!(ws.len(), 2);
+        assert_eq!(ws[0].name, "main");
+        assert_eq!(ws[0].branch.as_deref(), Some("main"));
+        assert_eq!(ws[0].path, Path::new("/tmp/repo with space"));
+        assert_eq!(ws[1].name, "nexus/shell-231114-221320-ab12");
+        assert_eq!(
+            ws[1].branch.as_deref(),
+            Some("nexus/shell-231114-221320-ab12")
+        );
+        assert_eq!(
+            ws[1].path,
+            Path::new("/tmp/repo with space/.nx-worktrees/nexus/shell-231114-221320-ab12")
+        );
+    }
+
+    #[test]
+    fn parse_porcelain_skips_bare_block() {
+        let out = "\
+worktree /srv/bare.git
+bare
+
+worktree /srv/checkout
+HEAD 6cf78bbf16892e48ecef12a92d66d98c7c938453
+branch refs/heads/main
+";
+        let ws = parse_worktree_porcelain(out);
+        assert_eq!(ws.len(), 1, "bare 块不应进列表");
+        assert_eq!(ws[0].name, "main");
+        assert_eq!(ws[0].path, Path::new("/srv/checkout"));
+    }
+
+    #[test]
+    fn parse_porcelain_detached_falls_back_to_dir_name() {
+        let out = "\
+worktree /repo/.nx-worktrees/det-231114-221320-ab12
+HEAD 6cf78bbf16892e48ecef12a92d66d98c7c938453
+detached
+";
+        let ws = parse_worktree_porcelain(out);
+        assert_eq!(ws.len(), 1);
+        assert!(ws[0].branch.is_none(), "detached 无 branch");
+        assert_eq!(ws[0].name, "det-231114-221320-ab12", "目录名兜底");
     }
 }
