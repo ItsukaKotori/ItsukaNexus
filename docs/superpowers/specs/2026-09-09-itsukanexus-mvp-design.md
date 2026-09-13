@@ -1,9 +1,9 @@
 # ItsukaNexus MVP 实现架构设计
 
-> 版本：v1.2（2026-09-13，M4 重定向：按 Open Design 原型（astra-ade-prototype-v2）重构为"原型 UI 骨架"里程碑——四栏 workbench/项目注册表/亮色唯一主题；AgentProvider 顺延 M5、diff/merge 顺延 M6；参照 orca 源码（本地 `/Users/itsuka/CodeSpace/orca`）的实现模式，技术栈不变）
-> 历史：v1.1（2026-09-12，M3 细化修订：进程组 kill 序列、session_dispose 会话回收、事件载荷 camelCase 对齐、UI 库选型 shadcn/ui + Tailwind）
+> 版本：v1.3（2026-09-13，M5 细化：AgentProvider 双传输体系（claude stream-json 结构化 + 其余 PTY）、LaunchFleetDialog 并行编排、会话 UI（消息流/工具卡片/composer）、M4 遗留高价值吸收；**orca 已有功能直接参考 orca 实现**——预置命令/帧词汇/消息模型/编排语义取其验证值，差异处记明理由）
+> 历史：v1.2（2026-09-13，M4 重定向：按 Open Design 原型重构为"原型 UI 骨架"里程碑——四栏 workbench/项目注册表/亮色唯一主题）；v1.1（2026-09-12，M3 细化修订：进程组 kill 序列、session_dispose 会话回收、事件载荷 camelCase 对齐、UI 库选型 shadcn/ui + Tailwind）
 > 状态：已批准
-> 参考：[stablyai/orca](https://github.com/stablyai/orca)（形态参考：多 CLI agent 并行编排 + 每 agent 独立 worktree；UI 模式参考：tab 框架/porcelain v2 状态解析/主题令牌/持久化容错；其前端用 React，我们同为 React）
+> 参考：[stablyai/orca](https://github.com/stablyai/orca)（**实现参考（v1.3 起为直接参考）**：多 CLI agent 并行编排 + 每 agent 独立 worktree；关键锚点——`src/shared/tui-agent-config.ts`（agent 预置命令）、`src/main/claude/claude-structured-launch-resolution.ts` + `agent-session-wire/claude-stream-json-frame-schema.ts`（stream-json 帧）、`src/shared/native-chat-types.ts`（消息/工具卡片模型）、`src/main/native-chat/agent-session-wire/structured-agent-session-adapter.ts`（适配器 trait 形状）、`src/main/runtime/orchestration/`（fleet）；技术栈不同（Electron+TS vs Tauri+Rust），语义层直接翻译）
 > 约束：开发者本人是 Rust 新手，本设计同时是一份 Rust 学习路径。技术栈（Tauri 2 + React TS + Rust 全量核心逻辑）已锁定，本文为细化设计。
 > 原型：`~/Library/Application Support/Open Design/namespaces/release-stable/data/projects/a3e91f89-9d76-4a78-ae04-cf4e4b3d0501/`（astra-ade-prototype-v2.html 为视觉/布局权威，brand-spec.md 为视觉规则权威；产品名保留 ItsukaNexus，不用原型内 Astra 字样）
 
@@ -63,16 +63,20 @@ ItsukaNexus/
 │   │   │   ├── TerminalPane.tsx    # 容器：ResizeObserver + 挂载 xterm DOM（常驻只藏不卸）
 │   │   │   ├── useTerminalSession.ts   # attach channel / write / resize 的 hook
 │   │   │   └── terminalManager.ts  # xterm 实例注册表（会话 -> Terminal），React 外的常驻层
+│   │   ├── agent/
+│   │   │   ├── AgentPane.tsx       # M5：会话视图（消息流/工具卡片/composer，原型 pane-agent）
+│   │   │   └── useAgentSession.ts  # M5：agent_attach channel / prompt 发送 / replay 恢复
 │   │   ├── tabs/
-│   │   │   ├── TabStrip.tsx        # 多类型标签条（状态点/标签/kind 徽标/关闭）+「+」新建
-│   │   │   └── TabBody.tsx         # 按 tab.kind 分发内容（M4 仅 terminal，其余空态占位）
+│   │   │   ├── TabStrip.tsx        # 多类型标签条（状态点/标签/kind 徽标/关闭）+「+」新建/并行编排
+│   │   │   └── TabBody.tsx         # 按 tab.kind 分发内容（terminal=终端闩锁 / agent=会话视图）
 │   │   ├── project/
 │   │   │   ├── ProjectTree.tsx     # 树：项目(branch 徽标) > worktree > session（点击激活 tab）
 │   │   │   ├── OpenDirOverlay.tsx  # 打开目录：手输 + dialog 浏览 + 最近打开
 │   │   │   └── NewWorktreePopover.tsx  # 项目节点「+」：基线 ref + 建完开终端
 │   │   ├── gitpanel/
 │   │   │   └── GitPanel.tsx        # 右侧 Git 面板：分支/ahead·behind/变更列表/暂存/提交
-│   │   ├── launch/                 # （M5：LaunchFleetDialog / AgentProfileEditor）
+│   │   ├── launch/
+│   │   │   └── LaunchFleetDialog.tsx # M5：并行编排（provider×N + 基线 ref → N worktree×N 会话）
 │   │   ├── worktree/               # （M6：DiffView / MergeDialog）
 │   │   └── settings/ConfigDialog.tsx  # 现有配置对话框暂留（设置 pane 为远期）
 │   ├── lib/format.ts               # 时间/字节格式化等工具
@@ -97,11 +101,12 @@ ItsukaNexus/
     │           ├── agent/
     │           │   ├── mod.rs
     │           │   ├── state.rs    # SessionState 状态机 enum
-    │           │   ├── provider.rs # AgentProvider trait + AgentCapabilities（M5 落地）
-    │           │   ├── registry.rs # ProviderRegistry（M5 落地）
-    │           │   ├── cli.rs      # CliAgentProvider（M5 唯一实现）
+    │           │   ├── provider.rs # AgentProvider trait + AgentTransport（M5 落地，§4.1）
+    │           │   ├── registry.rs # ProviderRegistry::from_config + 预置模板（M5）
+    │           │   ├── cli.rs      # CliAgentProvider：AgentProfile 驱动（M5 唯一实现）
+    │           │   ├── streamjson.rs # M5：claude stream-json 帧解析（orca 帧词汇 + 快照单测）
     │           │   ├── session.rs  # AgentSession：组合 PtySession + 状态机 + 事件
-    │           │   └── manager.rs  # SessionManager：会话表 + 编排（一键 N 会话）
+    │           │   └── manager.rs  # SessionManager：会话表 + launch_fleet 编排
     │           ├── gitx/
     │           │   ├── mod.rs
     │           │   ├── ops.rs      # GitOps trait（CLI 实现的缝）
@@ -149,6 +154,13 @@ ItsukaNexus/
 - `RwLock<HashMap<SessionId, SessionHandle>>`；`SessionHandle` 是瘦句柄（快照 + 命令通道），不是共享可变大对象——读写锁只保护注册表，会话内部状态由会话自己的任务独占（actor 风格，避免锁粒度地狱）。
 - 提供 `launch_fleet(repo, provider, n, base)`：原子地"创建 N 个 worktree + N 个会话"，任一步失败则回滚已建部分。
 - **会话回收（M3）**：终态（Exited/Failed）条目"关 tab 即删"——`session_dispose` 命令 drop 条目（replay/订阅/句柄/取消令牌全释放），运行中会话调用返回错误；终态时自动置空 subscriber 终结常驻转发任务；`list()` 按 startedAtMs 排序（刷新后 tab 序稳定）。
+
+**agent::AgentProvider 体系与双传输（M5，orca 直接参考）**
+- `AgentProvider` trait（§4.1）：`id/display_name/transport/prepare(ctx) -> LaunchSpec`；唯一实现 `CliAgentProvider` 持一条 `AgentProfile`（roster 来自配置，orca 的 per-agent preset 表退化为五条预置模板常量 + 配置可编辑——命令值取 orca `tui-agent-config.ts` 验证值：`claude`/`codex`/`qwen`/`opencode` 裸 TUI 命令）。
+- `AgentTransport = Pty | Jsonl`：**Pty**（codex/qwen/opencode 及纯 shell）走 M1-M3 全链路（PTY/背压/合帧/replay，零改动）；**Jsonl**（claude）= `tokio::process` 子进程 + stdin/stdout 管道（**非 PTY**），spawn 时分叉、进程生命周期/wait/强杀/状态机/事件广播全部复用既有链路。claude 命令：`claude -p --input-format stream-json --output-format stream-json --verbose --permission-mode acceptEdits` + 模板参数（进程常驻，stdin 吃 user 消息，stdout 出事件流；与 orca `claude-structured-launch-resolution.ts` 的 SDK query() 等价——差异：orca 供 canUseTool 回调故加 `--permission-prompt-tool stdio`、钉扎 `CLAUDE_CONFIG_DIR`，我们 acceptEdits 默认无交互权限且单用户单配置，两者都不需要）。
+- `streamjson.rs` 帧解析（orca `claude-stream-json-frame-schema.ts` 帧词汇）：MVP 集合 `system(init)`/`assistant(text|tool_use)`/`user(tool_result)`/`result(终帧)`；解析纪律同 gitx（只认必要字段，未知透传忽略，真实样本快照单测）。
+- 结构化事件流：jsonl 会话 stdout 逐行 → `AgentEvent` → 订阅者；**replay = JSONL 原始行 ring buffer 256KB**（与 PTY replay 同型，刷新级恢复）。与 orca 差异：orca 用 SQLite WAL append-only journal（跨启动持久 + 多客户端），我们不引入（nexus-core 零新依赖约束），跨启动历史 M6+ 候选。
+- `launch_fleet(repo, base_ref?, items: [{profile_id, prompt?}])`：逐项 create worktree → session_create → 初始指令**仅对 Jsonl provider 生效**（session_prompt 即开工；Pty 项开终端到 worktree 即完成——TUI 就绪前粘贴是 orca 都需精心编排的坑，MVP 不碰）；任一步失败逆序回滚（M3 孤儿回滚放大版），回滚自身失败 → 尽力清 + 错误列明残留。
 
 **agent::SessionState（状态机，Rust enum 为唯一权威）**
 
@@ -206,14 +218,17 @@ Created ──start()──> Running ──user/orchestrator stop──> Stoppin
 | `project_list` | – | `Vec<ProjectEntry>` | M4 |
 | `project_add` | `{ path }` | `ProjectEntry`（入册前 git 校验，非 repo 拒绝） | M4 |
 | `project_remove` | `{ project_id }` | – | M4 |
-| `session_create` | `{ provider_id, repo_path?, worktree_name?, env_overrides? }` | `{ session_id, state }` | M1（M1 时 provider_id 固定传 `"shell"`，内部硬编码默认 shell；M5 变为真实 provider 注册表——**签名从 M1 起保持稳定**） |
+| `session_create` | `{ provider_id, repo_path?, worktree_name?, env_overrides? }` | `{ session_id, state }` | M1（M1-M4 provider_id 固定 `"shell"`；M5 起经 ProviderRegistry 真实解析，快照增 `providerId`/`transport` 字段——**签名从 M1 起保持稳定**） |
 | `session_attach` | `{ session_id, output: Channel<PtyChunk> }` | `{ replayed_bytes }` | M2 |
 | `session_send_input` | `{ session_id, data }` | – | M1 |
 | `session_resize` | `{ session_id, cols, rows }` | – | M1 |
 | `session_stop` | `{ session_id, force }` | – | M1 |
 | `session_list` | – | `Vec<SessionSnapshot>` | M2 |
 | `session_dispose` | `{ session_id }` | – | M3（仅终态可删；"关 tab 即删"语义） |
-| `provider_list` | – | `Vec<ProviderInfo>` | M5 |
+| `provider_list` | – | `Vec<ProviderInfo>`（含命令存在性探测，参考 orca detectCmd） | M5 |
+| `agent_attach` | `{ session_id, output: Channel<AgentEvent> }` | `{ replayed_events }` | M5（仅 Jsonl 会话；PTY 会话照旧 `session_attach`） |
+| `session_prompt` | `{ session_id, text }` | – | M5（仅 Jsonl 会话；stdin 写 user 消息 JSON） |
+| `launch_fleet` | `{ repo_path, base_ref?, items: [{profile_id, prompt?}] }` | `Vec<SessionSnapshot>` | M5（失败逆序回滚） |
 | `config_get` / `config_save` | – / `{ config }` | `AppConfig` / – | M2 |
 
 #### 事件与流（Rust → 前端）
@@ -225,7 +240,7 @@ Created ──start()──> Running ──user/orchestrator stop──> Stoppin
 | `session://state` | `{ sessionId, prev, next, atMs, detail? }` | 状态机迁移；项目树 session 节点/标签状态点实时刷新 | M2 |
 | `session://exit` | `{ sessionId, code }` | 可并入 state，但独立出来便于前端弱网去重 | M2 |
 | `worktree://changed` | `{ repoPath, change }` | Created/Removed/Merged，多面板联动 | M3 |
-| `app://error` | `{ source, message, recoverable }` | 全局 toast | M5 |
+| ~~`app://error`~~ | – | **裁剪（v1.3）**：错误走命令返回值 + `session://state` + M4 toast 已全覆盖，不新增事件 | – |
 
 **Channel（高频流，per-session，非广播）**：
 
@@ -242,7 +257,8 @@ Created ──start()──> Running ──user/orchestrator stop──> Stoppin
 - **技术**：React 19 + Vite + TypeScript；`@xterm/xterm` + `@xterm/addon-fit` + `@xterm/addon-web-links`（xterm.js 5.x 起包名迁到 `@xterm` scope）+ `@xterm/addon-webgl`（大输出时的渲染加速，作为渐进增强，失败自动回退 DOM renderer）。
 - **UI 组件（M3 起）**：**shadcn/ui + Tailwind v4**——组件源码进仓库、无运行时框架锁定。**主题（M4 决策）：亮色唯一**——原型亮色令牌落 `:root`（背景 `oklch(0.985 0 0)`、近白反色主操作色、蓝色 accent、状态色 ok/warn/run/err、git 状态色 M/A/D/U），经 `@theme inline` 映射 Tailwind 工具类；令牌全走 CSS 变量，未来加暗色零重构，但 M4 不做 `.dark` 类与切换 UI。视觉规则按原型 brand-spec：单色外壳（导航/侧栏只用中性灰）、发丝分割线（1px border）、颜色即状态、三层阴影。**字体本地打包**（桌面应用禁止 CDN）：Geist 可变字重 + JetBrains Mono 的 woff2 进 `src/assets/fonts/` 经 `@font-face` 声明。
 - **布局（M4 起，四栏 workbench，原型为权威）**：`Workbench` = `Rail`（52px 图标导航：项目/任务·市场·设置占位禁用）+ `ProjectSide`（272px 项目树 + 打开目录）+ 中心 `TabStrip/TabBody`（多类型标签）+ `CtxPanel`（296px 右面板：Git 分段实现、文件分段占位）。单一 `useWorkbenchLayout` 派生钩子（orca `useAppChromeLayout` 模式）回答"哪些区域挂载/折叠"；侧栏与右面板可折叠，最小窗口宽度约 960px，不做自动降级断点；保留系统标题栏（不做自定义窗口装饰）。
-- **tab 框架（M4 核心新抽象）**：`tabStore`（zustand）单一 tab 模型——`Tab = { id, kind: "terminal" | (M5+ 会话/diff/编辑器…), label, projectId?, worktreeName?, sessionId? }`。**session 是数据（sessionsStore）、tab 是视图（tabStore）**，两者解耦；M4 不做 tab 状态持久化，重启后由 `session_list` 重建终端 tab（orca 双 tab 模型并行是其最大复杂度税，我们自始只有一个）。终端标签标题取"最低空闲序号"（终端 1 关闭后复用，orca 同款）。
+- **tab 框架（M4 核心新抽象，M5 扩展 kind）**：`tabStore`（zustand）单一 tab 模型——`Tab = { id, kind: "terminal" | "agent" | (M6+ diff/编辑器…), label, providerId?, sessionId, repoPath?, worktreeName? }`。**session 是数据（sessionsStore）、tab 是视图（tabStore）**，两者解耦；tab 不持久化，重启由 `session_list` 重建（orca 双 tab 模型并行是其最大复杂度税，我们自始只有一个）。终端标签标题取"最低空闲序号"（终端 1 关闭后复用，orca 同款）。TabBody 按会话 transport 分派：Pty → TerminalPane（闩锁红线不变）、Jsonl → AgentPane（**同样常驻只藏不卸**——TabBody 全量 map + 按 active 切显隐的既有机制天然推广闩锁）。
+- **会话视图 AgentPane（M5，原型 pane-agent + orca 消息模型）**：头部（状态点/标题=初始指令截断/provider chip/计时）+ 消息流（用户 bubble / agent 文本块 / **工具卡片**：名称+参数摘要+`running|completed|failed` 三态+结果摘要——orca `native-chat-types.ts` 的 state 词汇与 Block 形状直接翻译，image-ref/subagent-group 占位不做）+ composer（textarea + 发送 = `session_prompt`；模型钮显示 provider 名，@上下文/`/`模板/会话级模型选择裁剪——orca 的 session-option 机制记为后续参考）。**红线辨析**：PTY 字节流不进 React 的红线不变；结构化 `AgentEvent` 是低频语义事件（非字节流），进 zustand 合法——消息 store 按会话存，**cap 500 条丢头**；tool_use→tool_result 按 id 配对更新卡片。恢复：`agent_attach` replay 重建消息流。Pty agent 会话 = 终端 tab + provider 名徽标，无 composer（orca 的 PTY 发送编排是重坑，MVP 不碰——终端就在眼前直接敲）。
 - **状态管理**：zustand。会话表是"一个集合 + 多处派生视图（项目树/标签条/右面板）"的典型全局单 store 场景，zustand 的 selector + 浅比较天然匹配且学习成本一晚上。
 - **xterm 实例管理（关键决策，M0 起不变）**：`terminalManager.ts` 是 React 树之外的普通 TS 模块，持有 `Map<sessionId, Terminal>`。**每个会话的 Terminal 实例常驻**（切换 tab 用 CSS 隐藏/显示，挂载闩锁——任何布局切换不销毁），避免卸载重建丢失 scrollback 与 TUI 状态；React 只通过 store 订阅"哪些会话存在"，绝不把输出数据放进 React state（输出直达 `term.write`，绕过 React 渲染管线——这是性能红线）。
 - **数据接入**：`useTerminalSession(sessionId)` hook 负责 `new Channel<PtyChunk>()` → `session_attach` → `onmessage` 里 `term.write(chunk.data)`；`term.onData` → `session_send_input`；`ResizeObserver` + fit addon → `session_resize`（防抖 100ms）。xterm 主题配色与亮色令牌对齐。
@@ -327,14 +343,17 @@ commands::session::send_input ──> SessionManager 查句柄 ──> PtyWriter
 | 关键技术 | tokio::process（既有）、porcelain v2、zustand、@font-face 本地字体 |
 | 完成标准（验证） | ① 打开目录 → 项目入树（重启还在）→ 树「+」建 worktree → 终端自动开且 `pwd` 落 worktree；② tabstrip「+」即时开终端（选中节点决定 cwd），多项目多终端并行互不串流；③ Git 面板：改文件 → 列表出现 → 暂存 → 填信息提交 → 列表清空（外部 `git log` 核对）；④ 刷新恢复：终端内容 + 项目树 + tab 全部重建；⑤ 亮色主题全界面一致（无暗色残留）、断网启动字体正常；⑥ `cargo test --workspace` 全绿（porcelain v2 快照单测含中文路径）+ 三平台 CI 绿；⑦ M2/M3 基线不回退（强杀/背压/恢复/关 tab 即删） |
 
-### M5 — AgentProvider + 并行编排 + 会话 UI
+### M5 — AgentProvider + 并行编排 + 会话 UI（v1.3 细化）
+
+> 方向（2026-09-13 用户决策）：claude 结构化（stream-json 双向 JSON 流）+ 其余 agent PTY；orca 已有功能直接参考其实现；M4 延后 Minor 高价值批量吸收。
 
 | 项 | 内容 |
 |---|---|
-| 交付物 | `AgentProvider` trait + `ProviderRegistry`；`CliAgentProvider` 由配置中的 AgentProfile 驱动（预置 claude/codex/qwen/opencode 四个模板，命令可编辑）；`LaunchFleetDialog`：选 repo + 选 provider ×N + 基线分支 → 原子创建 N worktree + N 会话；`launch_fleet` 失败回滚；`app://error` → 前端 toast；**会话 UI（原型 pane-agent 形态）**：tab kind `agent-session`——消息流/工具调用卡片/任务列表/composer（模型选择 + @上下文），挂在 M4 的 tab 框架上 |
-| Rust 学习主题 | **trait 进阶**：`dyn Trait`、对象安全、`Box<dyn AgentProvider>` vs 泛型取舍；enum 状态机驱动 UI（穷尽 match 保证新增状态时编译器点名所有漏改处）；错误类型层次设计（`NexusError` 分层：Config/Git/Pty/Spawn）；registry 模式；broadcast 通道扇出与 lagged 处理 |
-| 关键技术 | trait object、EventBus、zustand selector 派生 |
-| 完成标准（验证） | ① 一条龙：选 repo → 3 个不同 agent 并行跑 3 个 worktree（真实跑 `claude`/`codex`/`qwen` 命令）→ 项目树/标签状态实时变化 → 一键全部停止 → 清理；② 故意把某 agent 命令写错，该会话进 Failed 且 toast 提示，其余不受影响；③ fleet 创建中途失败（如分支名冲突）自动回滚已建 worktree；④ 会话 UI 消息流/工具卡片随 agent 运行实时渲染；⑤ `cargo test`：用假 agent profile 跑通编排集成测试 |
+| 交付物 | **后端**：`AgentProvider` trait + `AgentTransport(Pty\|Jsonl)` + `ProviderRegistry::from_config`（预置模板五条：shell/claude/codex/qwen/opencode，命令值取 orca `tui-agent-config.ts` 验证值，配置可编辑——`AgentProfile` 增 `transport` 可选字段缺省 pty，M2 档零损）；session_create 经注册表真实解析；**jsonl 传输**（manager spawn 分叉：子进程管道而非 PTY，生命周期/状态机/强杀复用既有链路）+ `streamjson.rs` 帧解析（orca 帧词汇 + 真实样本快照单测）+ `AgentEvent` 流与 JSONL ring buffer replay；`agent_attach`/`session_prompt`/`provider_list`（含命令存在性探测）/`launch_fleet`（顺序创建 + 失败逆序回滚，初始指令仅 Jsonl provider 生效）。**前端**：tab kind `agent` 的会话视图 `AgentPane`（消息流/工具卡片 running·completed·failed 三态/composer，原型 pane-agent 布局 + orca NativeChatMessage 裁剪翻译；消息 store cap 500 条丢头，agent_attach replay 恢复）；Pty agent 会话 = 终端 tab + provider 徽标；`LaunchFleetDialog`（TabStrip「+」→「并行编排…」：项目 + 基线 ref + 条目行 provider×N + prompt，成功逐个开 tab）。**M4 遗留吸收（高价值批量）**：Git 面板 repo 切换竞态（epoch 闸）/折叠丢提交草稿/worktree 语义（选中 worktree 时 `git status -C <worktree 路径>`）；gitx 'T' 码映射、gate 文案分离（porcelain v2 只需 git≥2.11）、`parse_status_porcelain_v2` 收窄 pub(crate)；registry list 排序 + 文案；Toaster 层级。**裁剪记档**：`app://error` 不新增（命令返回 + session://state + toast 已覆盖）；@上下文、`/`模板、会话级模型选择、PTY 会话 composer、任务看板不做 |
+| Rust 学习主题 | **trait 进阶**：`dyn Trait`、对象安全、`Arc<dyn AgentProvider>` vs 泛型取舍；**子进程管道双向 IO**（stdin 常驻写 + stdout 逐行读，对照 PTY 的读线程模型）；增量 JSONL 解析（对照 porcelain 纪律：只认必要字段、未知透传）；多步编排的事务性（顺序创建 + 逆序回滚的幂等清理）；错误类型层次（`NexusError` 分层沿用） |
+| 关键技术 | trait object、tokio::process 管道、Tauri Channel 双类型（PtyChunk/AgentEvent）、zustand 消息 store（有界） |
+| 权限默认 | claude 预置模板 argsTemplate 带 `--permission-mode acceptEdits`（编辑自动通过，bash 等按 `~/.claude/settings.json` allow 规则继承）；profile 可编辑切换 `bypassPermissions`（全自动，orca YOLO preset 同款）——开箱默认由用户拍板（2026-09-13） |
+| 完成标准（验证） | ① 一条龙：并行编排 → claude（结构化会话）+ codex/qwen（终端）各跑一个 worktree（真实命令）→ 会话视图消息流/工具卡片实时渲染、终端 TUI 正常 → 项目树/标签状态实时变化 → 一键全部停止 → 清理；② 某 provider 命令写错 → 该会话进 Failed + toast，其余不受影响；provider 命令未安装 → `provider_list` 探测降级标注、不 panic；③ fleet 中途失败（如 worktree 创建失败）自动逆序回滚已建部分，回滚失败时错误信息列明残留；④ composer 发指令 → claude 执行工具（文件编辑自动通过）→ 工具卡片状态流转 → result 终帧；刷新（Ctrl+R）后消息流 replay 恢复；⑤ `cargo test --workspace`：假 jsonl agent 夹具（脚本吐固定 stream-json 序列）跑通 provider→spawn→prompt→事件→attach 全链 + fleet 回滚集成 + 解析器快照；⑥ M4 遗留吸收项验收（Git 面板竞态/草稿/worktree 语义/'T' 码）；⑦ M2-M4 基线不回退（多终端并行/背压/PTY replay/关 tab 即删/Git 面板/亮色主题） |
 
 ### M6 — Diff/合并 + 打磨 = MVP
 
@@ -370,26 +389,23 @@ commands::session::send_input ──> SessionManager 查句柄 ──> PtyWriter
 ### 4.1 AgentProvider trait 设计草图
 
 ```rust
-// nexus-core/src/agent/provider.rs —— 接口规格（非实现）
+// nexus-core/src/agent/provider.rs —— v1.3 落地形态（M5 实现）
 pub trait AgentProvider: Send + Sync {
-    fn id(&self) -> ProviderId;                      // "cli:claude-code"
-    fn display_name(&self) -> &str;                  // "Claude Code"
-    fn capabilities(&self) -> AgentCapabilities;     // requires_pty / supports_resume / prompt_hint 正则（供未来 WaitingInput 推断）
-
-    /// 把"要在哪、干什么"翻译成"怎么启动"：argv 模板渲染、env 注入、cwd 决策
+    fn id(&self) -> &str;                // "claude"（profile id，配置可编辑，不设 newtype）
+    fn display_name(&self) -> &str;      // "Claude Code"
+    fn transport(&self) -> AgentTransport; // Pty | Jsonl
+    /// 把"要在哪"翻译成"怎么启动"：argv 模板渲染（{worktree_path}/{branch}）、env 注入、cwd 决策
     fn prepare(&self, ctx: &LaunchContext) -> Result<LaunchSpec, NexusError>;
-
-    /// 传输形态：v1 只有 Pty；未来 Acp(JsonRpc over stdio) / Mcp
-    fn transport(&self) -> AgentTransport;
 }
 
-pub struct LaunchContext { repo, worktree, user_prompt: Option<String>, env_overrides }
-pub struct LaunchSpec   { argv, env, cwd, initial_cols_rows, term_env }
+pub struct LaunchContext { repo: Option<PathBuf>, worktree: Option<WorktreeInfo>, env_overrides }
+pub struct LaunchSpec   { argv, env, cwd, transport }   // initial_cols_rows/term_env 仅 Pty 消费
 ```
 
-- v1 唯一实现 `CliAgentProvider`：持有配置里的 `AgentProfile { command, args_template, env }`，`prepare` 渲染模板（`{worktree_path}`、`{branch}` 等占位符）。
-- **ACP/MCP 接入点**：未来加 `AcpProvider`，同一 trait、`transport() == AgentTransport::Acp`。`AgentSession` 的抽象是"统一的 `SessionEvent` 流 + 可选的 PTY 字节流"：CLI 会话只发 PTY 流（UI 显示终端），ACP 会话发结构化消息（UI 显示聊天视图）——前端按 transport 选视图，会话管理/编排/worktree 复用不变。这就是把"终端"从架构一等公民降级为"CLI agent 的一种渲染方式"的预留。
-- 注册：启动时 `ProviderRegistry::from_config()`，运行时可注册新 provider（为未来插件化留门）。
+- v1 唯一实现 `CliAgentProvider`：持有配置里的 `AgentProfile`，`prepare` 渲染占位符。**v1.3 裁剪**：不设 `capabilities()`（`transport()` 已回答渲染分派；prompt_hint 等 WaitingInput 推断留 v1.1）；id 不设 `ProviderId` newtype（来自用户配置，无防御价值）。
+- **Jsonl 是第一个结构化 transport（v1.3 落地，claude stream-json）**；`AgentSession` 的抽象是"统一的状态机 + 可选字节流（Pty）或结构化事件流（Jsonl）"——前端按 transport 选视图，会话管理/编排/worktree 复用不变。"终端"从架构一等公民降级为"Pty agent 的一种渲染方式"。
+- **ACP/MCP 接入点（未来）**：加 `AcpProvider` 同一 trait、`AgentTransport` 加变体；orca 的 `StructuredAgentSessionAdapter`（acquire/dispatch/answerPrompt/cancelTurn/close）是多协议（claude/codex）时才值得提炼的 trait 形状——M5 单 jsonl 实现不立（分叉收在 manager spawn + streamjson.rs），codex app-server 引入时按其形状提炼。
+- 注册：启动时 `ProviderRegistry::from_config()`（预置模板五条 + 用户配置合并），运行时可注册（为未来插件化留门）。
 
 ### 4.2 未来工具（API 客户端/DB 客户端）挂载方式
 
@@ -419,6 +435,9 @@ pub struct LaunchSpec   { argv, env, cwd, initial_cols_rows, term_env }
 | 11 | **M4 前端结构性重构回归**（一步到位换 shell，终端功能可能回退） | 每任务 `pnpm build` 绿；终端 pane 挂载闩锁（一旦挂载只藏不卸）；完成标准⑦把 M2/M3 基线（强杀/背压/刷新恢复/关 tab 即删）列为 M4 验收项；SDD 每任务独立审查 |
 | 12 | **porcelain v2 解析缺陷**（中文路径转义、rename 条目的 NUL 分隔 origPath） | `core.quotePath=false` 保证非 ASCII 路径原样输出；快照单测钉住解析（含中文路径、rename、staged/unstaged 双侧组合）；解析纪律只认行首关键词，未知行跳过 |
 | 13 | **tab 框架过度设计**（kind 扩展位诱使提前实现会话/diff 标签） | M4 只实现 `terminal` 一种 kind，其余 kind 空态占位（显示"该类标签将在后续里程碑提供"）；YAGNI 红线写进计划 |
+| 14 | **claude stream-json 协议漂移**（CLI 升级改字段/帧形态） | 解析纪律同 porcelain：只认必要字段，未知透传忽略；真实 claude 输出样本快照单测钉住既有形态；帧词汇对照 orca `claude-stream-json-frame-schema.ts`（其升级路径可跟进） |
+| 15 | **fleet 回滚半失败态**（逆序清理自身出错，留下孤儿 worktree/会话） | 回滚每步 best-effort + 错误信息列明残留路径/名称，用户经 Git 面板/worktree 清理手动收尾；M3 孤儿回滚同哲学放大 |
+| 16 | **agent CLI 缺失/未安装**（结构化会话 spawn 失败、fleet 部分项失败） | `provider_list` 命令存在性探测（参考 orca detectCmd，`which` 等价物）UI 标注降级；spawn 失败走既有 Failed 路径 + toast，不 panic（M3 git_check 同哲学） |
 
 ---
 
