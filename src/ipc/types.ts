@@ -80,6 +80,8 @@ export interface ProjectEntry {
   id: string;
   name: string;
   path: string;
+  /** 所属工作区(添加的父目录,canonical);legacy 档 = path */
+  workspace: string;
   addedAtMs: number;
 }
 

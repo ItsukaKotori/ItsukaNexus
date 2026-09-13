@@ -40,7 +40,14 @@ pub fn load(dir: &Path) -> Vec<ProjectEntry> {
     raws.iter()
         .filter_map(
             |r| match serde_json::from_value::<ProjectEntry>(r.clone()) {
-                Ok(e) => Some(e),
+                Ok(mut e) => {
+                    // legacy 档(工作区层级之前)缺 workspace 字段:回填 = path,
+                    // 老项目行自成一个工作区,零损迁移
+                    if e.workspace.as_os_str().is_empty() {
+                        e.workspace = e.path.clone();
+                    }
+                    Some(e)
+                }
                 Err(e) => {
                     log::warn!("一条项目记录损坏,丢弃: {e}");
                     None

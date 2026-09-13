@@ -129,9 +129,10 @@ export function projectList(): Promise<ProjectEntry[]> {
   return invoke<ProjectEntry[]>("project_list");
 }
 
-/** 入册(仅 git 仓库;后端归一 canonical 根并追加 repo 本地 exclude) */
-export function projectAdd(path: string): Promise<ProjectEntry> {
-  return invoke<ProjectEntry>("project_add", { path });
+/** 入册工作区目录(D 自身或其 git 子目录各为一个项目行;
+ *  后端归一 canonical 根、追加 repo 本地 exclude,返回该工作区全部条目) */
+export function projectAdd(path: string): Promise<ProjectEntry[]> {
+  return invoke<ProjectEntry[]>("project_add", { path });
 }
 
 export function projectRemove(projectId: string): Promise<void> {

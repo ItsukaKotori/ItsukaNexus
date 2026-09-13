@@ -1,5 +1,5 @@
 // project_*:项目注册表命令(薄封装,领域逻辑在 nexus-core registry 域)。
-// 入册校验(仅 git 仓库)在 ProjectRegistry::add 内完成。
+// 入册校验(D 自身或其 git 子目录)在 ProjectRegistry::add 内完成。
 use tauri::State;
 
 use nexus_core::ids::ProjectId;
@@ -15,7 +15,7 @@ pub async fn project_list(state: State<'_, ProjectRegistry>) -> Result<Vec<Proje
 pub async fn project_add(
     state: State<'_, ProjectRegistry>,
     path: String,
-) -> Result<ProjectEntry, String> {
+) -> Result<Vec<ProjectEntry>, String> {
     state.add(&path).await.map_err(|e| e.to_string())
 }
 

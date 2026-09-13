@@ -60,15 +60,27 @@ export const useProjects = create<ProjectState>((set, get) => ({
     }
   },
   addProject: async (path) => {
-    const entry = await projectAdd(path); // 非 git 目录等错误向上抛给 UI
-    set((st) => ({
-      projects: [...st.projects.filter((p) => p.id !== entry.id), entry].sort(
-        (a, b) => a.addedAtMs - b.addedAtMs
-      ),
-    }));
-    await get().refresh(entry.path);
-    get().select({ repoPath: entry.path });
-    return entry;
+    // 后端返回该工作区全部条目(新入册 + 已在册重挂);错误向上抛给 UI
+    const entries = await projectAdd(path);
+    let firstNew: ProjectEntry | undefined;
+    set((st) => {
+      const byId = new Map(st.projects.map((p) => [p.id, p] as const));
+      const knownPaths = new Set(st.projects.map((p) => p.path));
+      for (const e of entries) {
+        if (!knownPaths.has(e.path) && !firstNew) firstNew = e;
+        byId.set(e.id, e); // 去重 by id:已在册条目以其重挂后的 workspace 覆盖
+      }
+      const projects = [...byId.values()].sort(
+        (a, b) => a.addedAtMs - b.addedAtMs || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)
+      );
+      return { projects };
+    });
+    await Promise.all(entries.map((e) => get().refresh(e.path)));
+    // 选中第一个新条目;整单皆旧(重复打开同工作区)回落首个,与旧选中语义一致
+    const hit = firstNew ?? entries[0];
+    if (!hit) throw new Error("project_add 返回空列表"); // 后端成功必非空,防御性兜底
+    get().select({ repoPath: hit.path });
+    return hit;
   },
   removeProject: async (id) => {
     await projectRemove(id);

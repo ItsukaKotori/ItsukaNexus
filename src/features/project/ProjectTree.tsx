@@ -1,8 +1,11 @@
-// 项目树(原型 side):项目(branch 徽标) > worktree > session 三层。
+// 项目树(原型 side TREE 结构):工作区 > 项目(branch 徽标) > worktree > session。
+// 工作区 = 添加目录(D 自身 / 其 git 子目录各为一个项目行,见 registry add);
 // 三个数据源在组件内拼装:projects/detail(projectStore)+ sessions(sessionsStore)。
 // session 挂载规则:snap.repoPath === 项目 path 时,有 worktreeName 挂对应
 // worktree 下,否则挂项目根;不匹配任何项目的会话只出现在标签里(不进树)。
-import { ChevronDown, FolderGit2, X } from "lucide-react";
+// 工作区最后一个项目被移除后分组自然消失(纯派生,无持久化折叠态)。
+import { useMemo, useState } from "react";
+import { ChevronDown, Folder, FolderGit2, X } from "lucide-react";
 
 import NewWorktreePopover from "./NewWorktreePopover";
 import type { ProjectEntry, SessionSnapshot } from "../../ipc/types";
@@ -20,6 +23,35 @@ const DOT: Record<string, string> = {
   exited: "bg-gray-400",
   failed: "bg-status-err",
 };
+
+function basename(p: string): string {
+  return p.split("/").filter(Boolean).pop() ?? p;
+}
+
+// 分组:按 workspace 聚合;组序按组内最早 addedAtMs(组序稳定),组内按 addedAtMs
+// (同毫秒以 path 为次级键,与 store 合并序一致,防抖)
+interface WorkspaceGroup {
+  workspace: string;
+  list: ProjectEntry[];
+}
+
+function groupByWorkspace(projects: ProjectEntry[]): WorkspaceGroup[] {
+  const byPath = (a: ProjectEntry, b: ProjectEntry) =>
+    a.addedAtMs - b.addedAtMs || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+  const map = new Map<string, ProjectEntry[]>();
+  for (const p of projects) {
+    const list = map.get(p.workspace) ?? [];
+    list.push(p);
+    map.set(p.workspace, list);
+  }
+  return [...map.entries()]
+    .map(([workspace, list]) => ({ workspace, list: [...list].sort(byPath) }))
+    .sort((a, b) => {
+      const minA = Math.min(...a.list.map((p) => p.addedAtMs));
+      const minB = Math.min(...b.list.map((p) => p.addedAtMs));
+      return minA - minB || byPath(a.list[0], b.list[0]);
+    });
+}
 
 function SessionRow({ snap }: { snap: SessionSnapshot }) {
   const selected = useProjects((s) => s.selected);
@@ -126,9 +158,49 @@ function ProjectRow({
   );
 }
 
+// 工作区头行(原型 TREE 分组):chevron + 文件夹 + basename + 项目计数;
+// 点击折叠/展开(本地 state,默认展开;折叠 chevron 旋转 -90°)
+function WorkspaceHeader({
+  workspace,
+  count,
+  collapsed,
+  onToggle,
+}: {
+  workspace: string;
+  count: number;
+  collapsed: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      title={workspace}
+      onClick={onToggle}
+      className="flex h-8 w-full items-center gap-1.5 rounded-md px-2 text-left transition-colors duration-130 hover:bg-accent"
+    >
+      <ChevronDown
+        className={`size-3.5 shrink-0 text-muted-foreground/70 transition-transform duration-130 ${
+          collapsed ? "-rotate-90" : ""
+        }`}
+      />
+      <Folder className="size-3.5 shrink-0 text-muted-foreground" />
+      <span className="truncate text-[12.5px] font-semibold text-foreground">
+        {basename(workspace)}
+      </span>
+      <span className="flex-1" />
+      <span className="shrink-0 font-mono text-[10.5px] text-muted-foreground">
+        {count}
+      </span>
+    </button>
+  );
+}
+
 export default function ProjectTree() {
   const projects = useProjects((s) => s.projects);
   const sessions = useSessions((s) => s.sessions);
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+
+  const groups = useMemo(() => groupByWorkspace(projects), [projects]);
 
   if (projects.length === 0) {
     return (
@@ -139,22 +211,39 @@ export default function ProjectTree() {
   }
   return (
     <div className="flex-1 overflow-y-auto px-2 pt-2 pb-3.5">
-      {projects.map((p) => {
-        const mine = Object.values(sessions).filter(
-          (s) => s.repoPath === p.path
-        );
-        const byWorktree = new Map<string, SessionSnapshot[]>();
-        for (const s of mine) {
-          const key = s.worktreeName ?? "";
-          byWorktree.set(key, [...(byWorktree.get(key) ?? []), s]);
-        }
+      {groups.map(({ workspace, list }) => {
+        const isCollapsed = !!collapsed[workspace];
         return (
-          <div key={p.id} className="mb-1.5">
-            <ProjectRow project={p} byWorktree={byWorktree} />
-            {/* 挂项目根的会话(无 worktree) */}
-            {(byWorktree.get("") ?? []).map((s) => (
-              <SessionRow key={s.sessionId} snap={s} />
-            ))}
+          <div key={workspace} className="mb-1.5">
+            <WorkspaceHeader
+              workspace={workspace}
+              count={list.length}
+              collapsed={isCollapsed}
+              onToggle={() =>
+                setCollapsed((c) => ({ ...c, [workspace]: !c[workspace] }))
+              }
+            />
+            {!isCollapsed &&
+              list.map((p) => {
+                const mine = Object.values(sessions).filter(
+                  (s) => s.repoPath === p.path
+                );
+                const byWorktree = new Map<string, SessionSnapshot[]>();
+                for (const s of mine) {
+                  const key = s.worktreeName ?? "";
+                  byWorktree.set(key, [...(byWorktree.get(key) ?? []), s]);
+                }
+                return (
+                  // 组内项目整体缩进一级(+12px):ProjectRow / worktree / session 同步右移
+                  <div key={p.id} className="pl-3">
+                    <ProjectRow project={p} byWorktree={byWorktree} />
+                    {/* 挂项目根的会话(无 worktree) */}
+                    {(byWorktree.get("") ?? []).map((s) => (
+                      <SessionRow key={s.sessionId} snap={s} />
+                    ))}
+                  </div>
+                );
+              })}
           </div>
         );
       })}

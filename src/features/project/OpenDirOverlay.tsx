@@ -1,6 +1,6 @@
 // 打开目录(原型 openDirOverlay/palette):手输 + 原生浏览 + 最近打开(=注册表)。
 // 面板对齐原型 .palette:13vh 顶部落下、border-strong 描边、r-lg 圆角、pop 阴影。
-// 提交即 project_add(后端校验 git 仓库、归一 canonical、追加 exclude)。
+// 提交即 project_add(后端校验:git 仓库或包含 git 子目录的文件夹,归一 canonical、追加 exclude)。
 import { useCallback, useEffect, useState } from "react";
 import { Folder, FolderOpen } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -68,7 +68,7 @@ export default function OpenDirOverlay({ openState, onOpenChange }: Props) {
           <Folder className="size-4 shrink-0 text-muted-foreground" />
           <Input
             value={path}
-            placeholder="/path/to/repo(须为 git 仓库)"
+            placeholder="/path/to/dir(git 仓库,或包含 git 子目录的文件夹)"
             onChange={(e) => setPath(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter") void submit();
