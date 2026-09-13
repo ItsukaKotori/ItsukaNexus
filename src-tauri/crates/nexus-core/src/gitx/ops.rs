@@ -37,6 +37,42 @@ pub struct WorktreeInfo {
     pub branch: Option<String>,
 }
 
+/// 单侧(index 或 worktree)文件状态(porcelain v2 XY 字符映射)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FileStatus {
+    Modified,
+    Added,
+    Deleted,
+    Renamed,
+    Copied,
+    Untracked,
+    Unmerged,
+}
+
+/// status 条目:index/worktree 双侧;None = 该侧未变化('.')
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitStatusEntry {
+    pub path: PathBuf,
+    pub index: Option<FileStatus>,
+    pub worktree: Option<FileStatus>,
+    /// rename/copy 的原路径(仅 R/C 的 index 侧有)
+    pub orig_path: Option<PathBuf>,
+}
+
+/// git_status 返回:分支/ahead/behind 从 --branch 头部折叠(免二次子进程)
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitStatus {
+    pub branch: Option<String>,
+    pub ahead: u32,
+    pub behind: u32,
+    pub entries: Vec<GitStatusEntry>,
+    /// 超过条目上限被截断(orca 同款防巨量未跟踪目录)
+    pub truncated: bool,
+}
+
 #[async_trait::async_trait]
 pub trait GitOps: Send + Sync {
     /// 探测系统 git:可用性 / 版本 / 可执行路径 / worktree 支持。
@@ -63,4 +99,13 @@ pub trait GitOps: Send + Sync {
         path: &Path,
         delete_branch: bool,
     ) -> Result<(), NexusError>;
+
+    // ---- 状态/提交(M4,右侧 Git 面板)----
+
+    /// 工作区状态:porcelain v2 -z + --branch(分支与 ahead/behind 一次拿全)。
+    async fn status(&self, repo: &Path) -> Result<GitStatus, NexusError>;
+    /// 暂存:None = 全部(`git add -A`);Some = 指定路径。
+    async fn stage(&self, repo: &Path, paths: Option<&[PathBuf]>) -> Result<(), NexusError>;
+    /// 提交暂存区;message trim 后为空返回 InvalidInput。
+    async fn commit(&self, repo: &Path, message: &str) -> Result<(), NexusError>;
 }
