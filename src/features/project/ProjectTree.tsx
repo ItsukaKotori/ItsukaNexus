@@ -1,0 +1,155 @@
+// 项目树(原型 side):项目(branch 徽标) > worktree > session 三层。
+// 三个数据源在组件内拼装:projects/detail(projectStore)+ sessions(sessionsStore)。
+// session 挂载规则:snap.repoPath === 项目 path 时,有 worktreeName 挂对应
+// worktree 下,否则挂项目根;不匹配任何项目的会话只出现在标签里(不进树)。
+import { ChevronDown, FolderGit2, X } from "lucide-react";
+
+import type { ProjectEntry, SessionSnapshot } from "../../ipc/types";
+import { useProjects } from "../../stores/projectStore";
+import { useSessions } from "../../stores/sessionsStore";
+import { useTabs } from "../../stores/tabStore";
+
+const DOT: Record<string, string> = {
+  running: "bg-status-run",
+  stopping: "bg-status-warn",
+  exited: "bg-gray-400",
+  failed: "bg-status-err",
+};
+
+function SessionRow({ snap }: { snap: SessionSnapshot }) {
+  const selected = useProjects((s) => s.selected);
+  const mine =
+    selected?.repoPath === snap.repoPath &&
+    selected?.worktreeName === snap.worktreeName;
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        useProjects.getState().select({
+          repoPath: snap.repoPath ?? "",
+          worktreeName: snap.worktreeName ?? undefined,
+        });
+        useTabs.getState().setActive(`term-${snap.sessionId}`);
+      }}
+      className={`flex w-full items-center gap-1.5 py-0.5 pr-2 pl-[50px] text-left text-xs ${
+        mine ? "bg-card text-foreground" : "text-muted-foreground hover:bg-accent"
+      }`}
+    >
+      <span className={`size-1.5 shrink-0 rounded-full ${DOT[snap.state]}`} />
+      <span className="truncate">终端 · {snap.worktreeName?.split("/").pop() ?? snap.repoPath?.split("/").pop() ?? snap.sessionId.slice(0, 8)}</span>
+    </button>
+  );
+}
+
+function ProjectRow({
+  project,
+  byWorktree,
+}: {
+  project: ProjectEntry;
+  byWorktree: Map<string, SessionSnapshot[]>;
+}) {
+  const detail = useProjects((s) => s.detail[project.path]);
+  const selected = useProjects((s) => s.selected);
+  const removeProject = useProjects((s) => s.removeProject);
+  const mine = selected?.repoPath === project.path && !selected?.worktreeName;
+  const branch = detail?.info?.currentBranch;
+  return (
+    <div className="group/project">
+      <button
+        type="button"
+        onClick={() =>
+          useProjects.getState().select({ repoPath: project.path })
+        }
+        className={`flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-[13px] ${
+          mine ? "bg-card text-foreground" : "text-foreground hover:bg-accent"
+        }`}
+      >
+        <ChevronDown className="size-3.5 shrink-0 text-muted-foreground/70" />
+        <FolderGit2 className="size-3.5 shrink-0 text-muted-foreground" />
+        <span className="truncate">{project.name}</span>
+        <span className="flex-1" />
+        {branch && (
+          <span className="shrink-0 rounded border border-border px-1 font-mono text-[9.5px] text-muted-foreground">
+            {branch}
+          </span>
+        )}
+        <span
+          role="button"
+          aria-label="从列表移除(不删除磁盘)"
+          title="从列表移除(不删除磁盘)"
+          onClick={(e) => {
+            e.stopPropagation();
+            void removeProject(project.id);
+          }}
+          className="hidden shrink-0 rounded p-0.5 text-muted-foreground/60 hover:bg-secondary hover:text-foreground group-hover/project:block"
+        >
+          <X className="size-3" />
+        </span>
+      </button>
+      {/* worktree 子节点:过滤主 worktree(项目行即主检出);其下的 session 按
+          byWorktree 匹配挂载(与项目根会话同构,不另造组件) */}
+      {(detail?.worktrees ?? [])
+        .filter((w) => w.path !== project.path)
+        .map((w) => (
+          <div key={w.path}>
+            <button
+              type="button"
+              title={w.path}
+              onClick={() =>
+                useProjects
+                  .getState()
+                  .select({ repoPath: project.path, worktreeName: w.name })
+              }
+              className={`flex w-full items-center gap-1.5 py-0.5 pr-2 pl-[34px] text-left text-xs ${
+                selected?.repoPath === project.path && selected?.worktreeName === w.name
+                  ? "bg-card text-foreground"
+                  : "text-muted-foreground hover:bg-accent"
+              }`}
+            >
+              <span className="size-1.5 shrink-0 rounded-full bg-focus/70" />
+              <span className="truncate font-mono">{w.name.split("/").pop() ?? w.name}</span>
+            </button>
+            {(byWorktree.get(w.name) ?? []).map((s) => (
+              <SessionRow key={s.sessionId} snap={s} />
+            ))}
+          </div>
+        ))}
+    </div>
+  );
+}
+
+export default function ProjectTree() {
+  const projects = useProjects((s) => s.projects);
+  const sessions = useSessions((s) => s.sessions);
+
+  if (projects.length === 0) {
+    return (
+      <p className="p-4 text-center text-xs text-muted-foreground">
+        还没有项目——点右上角「打开目录」开始
+      </p>
+    );
+  }
+  return (
+    <div className="flex-1 overflow-y-auto px-1.5 py-2">
+      {projects.map((p) => {
+        const mine = Object.values(sessions).filter(
+          (s) => s.repoPath === p.path
+        );
+        const byWorktree = new Map<string, SessionSnapshot[]>();
+        for (const s of mine) {
+          const key = s.worktreeName ?? "";
+          byWorktree.set(key, [...(byWorktree.get(key) ?? []), s]);
+        }
+        return (
+          <div key={p.id} className="mb-1">
+            <ProjectRow project={p} byWorktree={byWorktree} />
+            {/* 挂项目根的会话(无 worktree) */}
+            {(byWorktree.get("") ?? []).map((s) => (
+              <SessionRow key={s.sessionId} snap={s} />
+            ))}
+          </div>
+        );
+      })}
+    </div>
+  );
+}

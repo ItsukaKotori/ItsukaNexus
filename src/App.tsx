@@ -35,16 +35,15 @@ import {
   onWorktreeChanged,
 } from "./ipc/events";
 import type { GitCheckInfo } from "./ipc/types";
+import { useProjects } from "./stores/projectStore";
 import { useSessions } from "./stores/sessionsStore";
 import { useTabs } from "./stores/tabStore";
-import { useWorktrees } from "./stores/worktreeStore";
 
 function App() {
   const hydrate = useSessions((s) => s.hydrate);
 
-  // git 探测结果 Task 6 经 props 传 ProjectSide;本任务先探着存着(左元暂空,
-  // noUnusedLocals)——届时改回 const [gitInfo, setGitInfo] 即可
-  const [, setGitInfo] = useState<GitCheckInfo | null>(null);
+  // git 探测结果经 props 传 ProjectSide(左栏黄条)
+  const [gitInfo, setGitInfo] = useState<GitCheckInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
   // 启动流程只跑一次(StrictMode 下 effect 双执行)
   const bootedRef = useRef(false);
@@ -74,6 +73,8 @@ function App() {
         console.error("[app] git_check 失败", e);
       }
       try {
+        // 项目树异步填充:不 await,不阻塞会话恢复
+        void useProjects.getState().loadAll();
         const snaps = await sessionList();
         hydrate(snaps);
         useTabs.getState().rebuildFromSessions(snaps);
@@ -83,7 +84,8 @@ function App() {
     })();
   }, [hydrate]);
 
-  // 全局事件 → store(M3 不变;worktreeStore 在 Task 6 被 projectStore 吸收)
+  // 全局事件 → store(worktree://changed 由 projectStore 接收;worktreeStore
+  // 文件暂留供 NewSessionDialog 使用,Task 7 随该对话框一并移除)
   useEffect(() => {
     const unState = onSessionStateEvent((sc) =>
       useSessions.getState().onState(sc.sessionId, sc.next)
@@ -92,7 +94,7 @@ function App() {
       useSessions.getState().onExit(ev)
     );
     const unWt = onWorktreeChanged((ev) =>
-      useWorktrees.getState().applyChange(ev)
+      useProjects.getState().applyWorktreeChange(ev)
     );
     return () => {
       void unState.then((u) => u());
@@ -170,7 +172,7 @@ function App() {
 
   return (
     <>
-      <Workbench onCloseTab={handleClose} onFitted={handleFitted} />
+      <Workbench gitInfo={gitInfo} onCloseTab={handleClose} onFitted={handleFitted} />
       {error && (
         <footer className="fixed inset-x-0 bottom-0 bg-destructive/10 px-4 py-1 text-sm text-destructive">
           {error}
