@@ -119,7 +119,7 @@ export default function TabStrip({ onClose }: Props) {
                   e.stopPropagation();
                   onClose(tab.sessionId);
                 }}
-                className={`grid size-4 shrink-0 place-items-center rounded transition-[opacity,background-color] duration-130 hover:bg-secondary hover:opacity-100 ${
+                className={`grid size-4 shrink-0 place-items-center rounded transition-[opacity,background-color] duration-130 hover:bg-secondary hover:opacity-100 focus-visible:opacity-100 ${
                   active ? "opacity-65" : "opacity-0 group-hover/ptab:opacity-65"
                 }`}
               >

@@ -106,7 +106,7 @@ function ProjectRow({
         <span className="truncate">{project.name}</span>
         <span className="flex-1" />
         {branch && (
-          <span className="shrink-0 rounded border border-border px-1 font-mono text-[9.5px] text-muted-foreground">
+          <span className="shrink-0 rounded border border-border px-1 font-mono text-[9.5px] text-faint">
             {branch}
           </span>
         )}
