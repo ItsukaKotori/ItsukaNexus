@@ -1,4 +1,6 @@
 // session_*(M2):创建/订阅/输入/resize/关停/快照列表。
+use std::str::FromStr;
+
 use serde::Serialize;
 use tauri::State;
 
@@ -47,9 +49,14 @@ pub async fn session_create(
 ) -> Result<SessionCreated, String> {
     let launch = match (&repo_path, &worktree_name) {
         (Some(repo), Some(name)) => {
+            // 必办#1:worktree_name 必须是 nexus 命名规范的合法名(FromStr 校验),
+            // 拒绝 ../ 等路径逃逸;worktree_remove 不校验——它按 name 精确匹配
+            // 列表条目,无路径拼接,外建 worktree 名也要能删。
+            let wt_name = nexus_core::ids::WorktreeName::from_str(name)
+                .map_err(|e| nexus_core::NexusError::InvalidInput(e).to_string())?;
             let wt_dir = std::path::PathBuf::from(repo)
                 .join(".nx-worktrees")
-                .join(name);
+                .join(wt_name.as_str());
             let canonical = wt_dir.canonicalize().map_err(|e| {
                 nexus_core::NexusError::InvalidInput(format!(
                     "worktree 不存在 {}: {e}",
@@ -60,7 +67,7 @@ pub async fn session_create(
             Some(nexus_core::agent::manager::LaunchSpec {
                 cwd: canonical,
                 repo_path: Some(repo.clone()),
-                worktree_name: Some(name.clone()),
+                worktree_name: Some(wt_name.as_str().to_string()),
             })
         }
         (None, Some(_)) => {

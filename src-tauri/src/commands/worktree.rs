@@ -92,3 +92,44 @@ pub async fn worktree_remove(
         .await
         .map_err(|e| e.to_string())
 }
+
+/// 工作区状态(porcelain v2):分支/ahead/behind/变更条目/截断标志。
+#[tauri::command]
+pub async fn git_status(
+    state: State<'_, WorktreeManager>,
+    repo_path: String,
+) -> Result<nexus_core::gitx::ops::GitStatus, String> {
+    ensure_worktree_ready(&state).await?;
+    state
+        .status(std::path::Path::new(&repo_path))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// 暂存:paths 缺省 = 全部暂存。
+#[tauri::command]
+pub async fn git_stage(
+    state: State<'_, WorktreeManager>,
+    repo_path: String,
+    paths: Option<Vec<std::path::PathBuf>>,
+) -> Result<(), String> {
+    ensure_worktree_ready(&state).await?;
+    state
+        .stage(std::path::Path::new(&repo_path), paths.as_deref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// 提交暂存区(空信息后端拒绝)。
+#[tauri::command]
+pub async fn git_commit(
+    state: State<'_, WorktreeManager>,
+    repo_path: String,
+    message: String,
+) -> Result<(), String> {
+    ensure_worktree_ready(&state).await?;
+    state
+        .commit(std::path::Path::new(&repo_path), &message)
+        .await
+        .map_err(|e| e.to_string())
+}
