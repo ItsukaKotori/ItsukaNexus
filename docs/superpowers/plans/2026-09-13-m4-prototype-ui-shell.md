@@ -3125,6 +3125,72 @@ gh pr checks --watch
 - **类型一致性**:`GitStatus{branch,ahead,behind,entries,truncated}` T2 定义、T3 TS 同构;`ProjectEntry{id,name,path,addedAtMs}` T1/T3/TS 三处一致;`useProjects.selected{repoPath,worktreeName?}` T6 定义、T7/T8 消费;tab id 恒 `term-<sessionId>`(T5 tabStore/T7/T9 App 收尾三处同源);`Tab.repoPath` 镜像快照字段(spec 写 projectId?,计划统一为 repoPath——与 SessionSnapshot 字段名一致,树匹配零转换)。✅
 - **已知风险**:① porcelain v2 `-z` 头记录 `\n`/变更记录 NUL 的混合分隔是文档行为,快照单测 + 真实 git 集成双保险(T2);② T5-T9 是连续前端重构,每步门槛 `pnpm build` + 终端基线目检,回退风险集中在 T5(布局重写)——挂载闩锁语义与 M3 完全一致是防线;③ fontsource 包名漂移:给了手写 @font-face 退路(T4);④ shadcn dropdown-menu/popover CLI 参数随版本漂移:同 M3 退路(T7)。✅
 
+---
+
+## 完成记录(2026-09-13,PR #5 已合并)
+
+全部 10 任务完成,每任务独立审查全 Approved;spec M4 完成标准①-⑦ 全过(⑥自动化:cargo test --workspace **87/87** 三平台绿 + clippy -D warnings 零警告 + pnpm build 绿;①-⑤⑦人工验收通过)。终审(fable):唯一 Important **I-1**(session_create 的 `(Some(repo), None)` 分支走 M2 旧语义,TabStrip「+」选项目根时 cwd 不落项目根——T3 契约×T7 调用的跨任务缝隙,单任务审查盲区,终审网住)已修(8c80463,+专项测试 `session_with_repo_path_only_lands_at_project_root`,范围化复审全 ADDRESSED)。用户人工验收三轮反馈全部闭环:落点语义(I-1)/UI 对齐打磨(3f461bf+68ee0f8,原型 CSS 为权威的纯样式波)/项目工作区层级(用户规格:添加目录成组、git 子目录各为项目行带 branch 徽标——d40c6f9,registry 加 workspace 字段+legacy 回填)。T7 实现者两度流断(代码全在盘上),按 SDD 派接手者收尾(核对 brief→重跑门槛→提交,代码零改动)。CI ubuntu 首轮失败 = `attach_seam_never_duplicates` 10s 超时(M2 既有测试,M4 未触该链路,偶发抖动,rerun --failed 即绿)。终态 15 提交,PR #5 CI 四项全绿,用户本人合并。
+
+### M5 必办(延后 Minor triage 全表,按域分组;SDD ledger 已随 worktree 清理,此处为唯一存档)
+
+**Git 面板(M5 会话 UI 更依赖,优先)**:
+1. repo 快速切换竞态(T8-①):旧 repo 在途 gitStatus 晚归覆盖新数据、新失败时旧 status 残留——无 epoch/abort 闸
+2. 右栏折叠卸载 GitPanel 丢提交草稿(终审;Workbench 条件渲染 aside 的既定代价)
+3. Git 面板忽略 worktree 选中——始终显示项目主检出状态,语义待决策(终审)
+4. busy 由 stage/commit 共享,无 per-action loading(T8-②)
+
+**gitx 后端**:
+5. porcelain 'T'(typechange)码未映射,按无变化处理(终审)
+6. 非 UTF-8 文件名 lossy 失真后按失真名 stage 失败(T2-⑤,&str 管线固有)
+7. git_* 三命令复用 ensure_worktree_ready 要求 git≥2.20,porcelain v2 实需 ≥2.11——2.11~2.19 机器 Git 面板被拒且文案误导(T3-①;可单设轻 gate)
+8. 旧式 \n 头形态下文件名内嵌 \n 可伪造头行(理论级,T2-②;加固:首段只认 # 行,遇变更前缀即停)
+9. parse_xy_path trim_end 截尾空格文件名、u 分支不 trim——不一致(T2-③);stage Some(&[]) no-op 无测试(T2-④);parse_status_porcelain_v2 可收窄 pub(crate)(T2-①)
+10. Windows 上路径 split("/") 不分段(终审;SessionRow/NewWorktreePopover 的名字截短显示)
+11. commit -m 前置 dash 选项解析(理论级,终审;message 以 `-` 开头会被 git 当选项)
+
+**registry**:
+12. add 扫描每子目录跑完整 validate_repo(3 git 子进程×N)+ 前端 refresh 重复探测——可换轻量 rev-parse(工作区层级轮)
+13. remove() save 失败内存已删/磁盘未删,下次启动复活(T1-②;与 config store 哲学一致,保留决策)
+14. list() 无防御性排序,手改 projects.json 乱序(T1-①;IPC 层一行 sort)
+15. "目录不存在"文案以偏概全(canonicalize 失败还可能权限/环)(工作区层级轮);add 内阻塞 fs I/O(与既有风格一致)(同轮);同毫秒次级键后端字节序 vs 前端 UTF-16 序(非 ASCII 目录名极端角落,两端各自确定)(同轮)
+16. 迁移备忘:落盘外层键实为 `schema_version`(非 fixture 的 `schemaVersion`),load 忽略外层键故惰性——未来写迁移勿按 fixture 键名假设(T1-③)
+
+**前端**:
+17. App 根订阅 sessions 全表(终审;PTY 输出不进 store,触发=低频状态转换,重渲染面无实际风险)
+18. Toaster 与 Dialog 同 z-50 且 DOM 序靠前——模态开着时新 toast 画在遮罩下(T9-①)
+19. OpenDirOverlay Enter 路径无在途守卫(T6-①,后端幂等无害)
+20. NewWorktreePopover 回滚后 selected 短暂指向已回收 worktree(T7-②);「+」点击冒泡选中项目根(T7-③,良性)
+21. 树视觉:根会话渲染在 worktree 子行后/选中根会话双高亮(T6-④);hover 触发器键盘不可达(原型欠账,T7-④);会话绑定 worktree 删后行消失(原型语义,T6-⑤)
+22. useWorkbenchLayout 在 setState updater 内写 localStorage(StrictMode 双写,幂等无害,T5-③);removeSession 对不存在 key 仍建新引用(无效重渲染一次,T9-③);自动收尾 sessionDispose 失败静默 vs handleClose 的 console 不一致(T9-②);lib.rs app_config_dir() 解析两次(T3-③)
+
+**测试/CI**:
+23. `attach_seam_never_duplicates` ubuntu 负载下可再抖——候选加固:放宽 deadline 或查 Linux PTY 时序(M2 既有测试,本轮 rerun 绿)
+24. T10-② 新用例 run 闭包失败不带 stderr(测试代码可接受)
+
+### 平台/生态知识库(本轮新踩,执行 M5 前必读)
+
+- **git 2.50.1 porcelain v2 `-z` 头记录也是 NUL 结尾**(计划前提"\n 结尾"错误,实现者实测发现):解析器两态兼容(首段 lines() 认 `# ` 头 + pending 循环也认),\n 头(旧 git)与 NUL 头(现代 git)两种形态各有专项内联测试钉住;变更记录行首 1/2/u/? 不可能 `#` 开头,无误判路径。
+- **porcelain v2 rename 真实形态**:`2 R.  ... R100 <path>\0<origPath>\0`——XY 是两字符(第二字符为 submodule 状态位 `.`),计划快照的 `2 R  ` 单字符形态不存在(会使 parse_xy_path 丢条目);校准时断言不变。
+- **React 19.2.8 reconcileChildrenArray 源码级结论**:Workbench 条件渲染 aside(`{sideOpen && <aside/>}`)不卸载 main 内组件——main 恒 index 2,折叠走 mapRemainingChildren 兜底复用、展开走 index-skip 不删旧 fiber,全开合序列 TerminalPane 不卸载(挂载闩锁红线保持)。**M5+ 若在 main 前插不同类型常驻栏,该结论需重新验证**(T5 轮"false 占槽"表述不精确,实际是槽位 index 记账)。
+- **fontsource 本地字体**:`@fontsource-variable/geist` + `@fontsource/jetbrains-mono`(400/500 两 css)import 即打包 woff2,离线可用;等价于 orca 手放 assets 自写 @font-face 的包管理形态。
+- **CI flake 判定法**:单平台超时 + 同测其他平台通过 + 分支未触该链路 → rerun --failed 验证即绿,记备忘不阻塞合并;不要为 flake 改实现代码。
+- **ExitWorktree remove 对已合并分支的误拒**:工具与本地 main ref 比较(fetch 前过时)——先带代理 fetch,再 `git branch -r --contains <分支末端>` 确认含 origin/main 后 discard_changes 安全。
+- **worktree 隔离会话的 git 边界**:worktree-isolated session 里 `git -C <主检出>` 被拒(harness 保护)——主检出的还原/pull 等操作必须在 ExitWorktree 之后做;ledger 等 git-ignored 工件须在 remove 前拷出。
+- **TaskOutput 轮询超时会 dump 子代理 transcript JSONL**(噪音大污染上下文)——等子代理任务尽量一次长等,不短间隔轮询。
+
+### 裁定索引(全程预检 2 条 + 任务/验收轮裁定,原文已随 SDD 工作区清理,此处为关键存档)
+
+- 预检:project_remove 未命中用 `InvalidInput("项目不存在: …")` 非 SessionNotFound(文案误导);计划 Self-Review 声明的裁剪(worktree_remove 不加 FromStr 等)获 spec 背书照准
+- T1:Task 3 接口提醒 ProjectId 无 From<Uuid>、错误通道 InvalidInput 定形
+- T2:**git -z 头 NUL 结尾**(计划前提错误,实测校准,解析器两态兼容+双形态测试);**rename 快照自相矛盾**(按实测 `2 R.` 形态校准,断言不变,审查者独立复现原快照必挂)
+- T4:brief 内部矛盾(内联字体栈 vs DEFAULT_FONT_STACK 常量,noUnusedLocals 二选一)——取常量复用,行为零差
+- T5:**Workbench asides 取条件渲染**(brief 代码块无条件渲染,但其自注与 T6 契约指向条件渲染;不实现则折叠钮是死按钮)——闩锁安全性经 React 19.2.8 源码逐行追踪独立证实
+- T6:ProjectSide 补 flex-1/ProjectRow 增 byWorktree prop(计划括号既定补全,照准)
+- T7:前任实现者两度流断——按 SDD 派接手者收尾(核对 brief→重跑门槛→提交→补报告),不算修复轮;接手者未申报的 tab 容器 div role=tab 改动以 diff 为准绳发现并照准(HTML 合法性,消 T5 的 role 嵌套 a11y 疵)
+- T8:条目 key `e.orig_path`→`e.origPath`(brief 笔误,契约字段 origPath,strict 下必编译失败)
+- 打磨波:阴影透明度取原型 light 值(.22/.18)非清单笔误的 dark 35%;新增 --border-strong/--faint 两枚原型 light 令牌
+- 工作区层级轮:重挂工作区保留 addedAtMs(组按最小时间戳排,重挂排旧位——规格字面推论,行为确定无抖动,用户验收通过)
+
 
 
 
