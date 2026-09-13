@@ -597,7 +597,12 @@ impl SessionManager {
             .values()
             .map(|h| h.snapshot.clone())
             .collect();
-        snaps.sort_by_key(|s| s.started_at_ms);
+        // 按 startedAtMs 升序;同毫秒按 session_id 字符串稳定排序
+        // (必办#6 T4-③:同毫秒创建的会话刷新后序不抖动)
+        snaps.sort_by(|a, b| {
+            (a.started_at_ms, a.session_id.to_string())
+                .cmp(&(b.started_at_ms, b.session_id.to_string()))
+        });
         snaps
     }
 }
