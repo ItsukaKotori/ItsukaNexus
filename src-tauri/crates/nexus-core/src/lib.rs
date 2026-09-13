@@ -6,5 +6,6 @@ pub mod error;
 pub mod gitx;
 pub mod ids;
 pub mod pty;
+pub mod registry;
 
 pub use error::NexusError;

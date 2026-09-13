@@ -5,6 +5,37 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+/// 项目注册表条目 id(spec §1.3 registry 域)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ProjectId(uuid::Uuid);
+
+impl ProjectId {
+    pub fn new() -> Self {
+        Self(uuid::Uuid::new_v4())
+    }
+}
+
+impl Default for ProjectId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Display for ProjectId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::str::FromStr for ProjectId {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        uuid::Uuid::parse_str(s)
+            .map(ProjectId)
+            .map_err(|e| format!("非法 project id {s:?}: {e}"))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SessionId(uuid::Uuid);
 
