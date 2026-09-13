@@ -84,8 +84,7 @@ function App() {
     })();
   }, [hydrate]);
 
-  // 全局事件 → store(worktree://changed 由 projectStore 接收;worktreeStore
-  // 文件暂留供 NewSessionDialog 使用,Task 7 随该对话框一并移除)
+  // 全局事件 → store(worktree://changed 由 projectStore 接收)
   useEffect(() => {
     const unState = onSessionStateEvent((sc) =>
       useSessions.getState().onState(sc.sessionId, sc.next)

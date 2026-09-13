@@ -4,6 +4,7 @@
 // worktree 下,否则挂项目根;不匹配任何项目的会话只出现在标签里(不进树)。
 import { ChevronDown, FolderGit2, X } from "lucide-react";
 
+import NewWorktreePopover from "./NewWorktreePopover";
 import type { ProjectEntry, SessionSnapshot } from "../../ipc/types";
 import { useProjects } from "../../stores/projectStore";
 import { useSessions } from "../../stores/sessionsStore";
@@ -73,6 +74,7 @@ function ProjectRow({
             {branch}
           </span>
         )}
+        <NewWorktreePopover repoPath={project.path} />
         <span
           role="button"
           aria-label="从列表移除(不删除磁盘)"
