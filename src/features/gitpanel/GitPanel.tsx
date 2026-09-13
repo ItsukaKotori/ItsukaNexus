@@ -98,7 +98,7 @@ export default function GitPanel() {
 
   if (!repoPath) {
     return (
-      <p className="p-4 text-center text-xs text-muted-foreground">
+      <p className="p-4 text-center text-[12.5px] text-muted-foreground">
         在左侧选择一个项目后显示 Git 状态
       </p>
     );
@@ -134,7 +134,7 @@ export default function GitPanel() {
             type="button"
             title="刷新"
             onClick={() => void refresh()}
-            className="grid size-6 place-items-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+            className="grid size-6 place-items-center rounded-md text-muted-foreground transition-colors duration-130 hover:bg-accent hover:text-foreground"
           >
             <RefreshCw className="size-3.5" />
           </button>
@@ -143,7 +143,7 @@ export default function GitPanel() {
       {/* 变更列表 */}
       <div className="px-2 py-2">
         <div className="flex items-center justify-between px-1 pb-1">
-          <span className="text-xs font-semibold text-muted-foreground">
+          <span className="text-[11px] font-semibold tracking-[0.05em] text-muted-foreground">
             变更文件 · {status?.entries.length ?? 0}
           </span>
           {status && status.entries.length > 0 && (
@@ -151,19 +151,19 @@ export default function GitPanel() {
               type="button"
               onClick={() => void stageAll()}
               disabled={busy}
-              className="text-[11px] text-muted-foreground hover:text-foreground"
+              className="rounded px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors duration-130 hover:bg-accent hover:text-foreground"
             >
               暂存全部
             </button>
           )}
         </div>
         {status?.truncated && (
-          <p className="mb-1 rounded bg-status-warn/10 px-2 py-1 text-[11px] text-status-warn">
+          <p className="mb-1 rounded-md bg-status-warn/10 px-2 py-1 text-[11px] text-status-warn">
             变更过多,仅显示前 2000 项
           </p>
         )}
         {status && status.entries.length === 0 && (
-          <p className="px-2 py-3 text-xs text-muted-foreground">
+          <p className="px-2 py-3 text-[12.5px] text-muted-foreground">
             工作区干净,没有未提交的变更。
           </p>
         )}
@@ -174,9 +174,9 @@ export default function GitPanel() {
             <div
               key={`${e.path}-${e.origPath ?? ""}`}
               title={e.origPath ? `${e.origPath} → ${e.path}` : e.path}
-              className="flex items-center gap-2 rounded px-2 py-1 font-mono text-[11px] hover:bg-accent"
+              className="flex h-7 items-center gap-2 rounded-md px-2 font-mono text-[11px] text-muted-foreground transition-colors duration-130 hover:bg-accent hover:text-foreground"
             >
-              <span className={`w-3 shrink-0 text-center font-semibold ${meta?.cls ?? ""}`}>
+              <span className={`w-[13px] shrink-0 text-center font-mono text-[11.5px] font-semibold ${meta?.cls ?? ""}`}>
                 {meta?.ch ?? "?"}
               </span>
               <span className="truncate">{e.path}</span>
@@ -190,7 +190,7 @@ export default function GitPanel() {
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           placeholder="提交信息…"
-          className="min-h-[60px] w-full resize-none rounded-md border border-input bg-card px-2.5 py-2 text-xs outline-none focus:border-ring focus:ring-2 focus:ring-ring/40"
+          className="min-h-[60px] w-full resize-none rounded-lg border border-input bg-card px-2.5 py-2 text-[12.5px] outline-none transition-[border-color,box-shadow] duration-130 placeholder:text-faint focus:border-focus focus:shadow-[0_0_0_3px_var(--ring)]"
         />
         <div className="mt-2 flex items-center justify-between">
           <span className="text-[11px] text-muted-foreground">

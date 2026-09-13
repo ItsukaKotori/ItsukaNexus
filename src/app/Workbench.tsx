@@ -36,11 +36,14 @@ export default function Workbench({ gitInfo, onCloseTab, onFitted }: Props) {
       </main>
       {ctxOpen && (
         <aside className="flex w-[296px] min-w-0 flex-col border-l border-border">
-          <div className="flex min-h-[37px] items-center gap-1 border-b border-border px-2">
-            <span className="rounded bg-card px-2 py-1 text-xs text-foreground">Git</span>
+          {/* 分段头(原型 .seg.ctxseg):激活段 = surface 底 + inset 下边 2px accent */}
+          <div className="flex min-h-[37px] items-center gap-0.5 border-b border-border px-2">
+            <span className="rounded-md bg-card px-2.5 py-1 text-[11.5px] text-foreground shadow-[inset_0_-2px_0_var(--focus)]">
+              Git
+            </span>
             <span
               title="文件(后续里程碑提供)"
-              className="cursor-not-allowed rounded px-2 py-1 text-xs text-muted-foreground/50"
+              className="cursor-not-allowed rounded-md px-2.5 py-1 text-[11.5px] text-muted-foreground/50"
             >
               文件
             </span>

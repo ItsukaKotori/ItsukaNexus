@@ -12,9 +12,10 @@ export default function Toaster() {
       className="fixed right-4 bottom-4 z-50 flex flex-col gap-2"
     >
       {toasts.map((t) => (
+        // 原型 .toast:border-strong 描边 + float 阴影 + rise 入场(8px 上浮渐显)
         <div
           key={t.id}
-          className="flex min-w-[240px] max-w-[400px] items-center gap-2.5 rounded-lg border border-border bg-card px-3 py-2.5 text-xs shadow-lg"
+          className="toast-rise flex min-w-[260px] max-w-[400px] items-center gap-2.5 rounded-xl border border-border-strong bg-card px-3 py-2.5 text-[12.5px] shadow-[0_10px_24px_oklch(0.2_0_0_/_0.18)]"
         >
           {t.kind === "error" ? (
             <Zap className="size-4 shrink-0 text-destructive" />

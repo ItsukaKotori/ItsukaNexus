@@ -26,9 +26,15 @@
   --accent-foreground: oklch(0.18 0 0);
   --destructive: oklch(0.55 0.2 25);
   --border: oklch(0.20 0 0 / 0.12);
+  /* 加一档发丝线(原型 border-strong:滚道/浮层描边用) */
+  --border-strong: oklch(0.20 0 0 / 0.22);
   --input: oklch(0.20 0 0 / 0.16);
   --ring: oklch(0.52 0.17 255 / 0.45);
   --radius: 0.5rem;
+  /* 弱文本第三档(原型 faint:placeholder/路径/徽标) */
+  --faint: oklch(0.63 0 0);
+  /* 过渡节奏(brand-spec:130ms) */
+  --transition: 130ms ease;
 
   /* 状态色(brand-spec:颜色即状态——蓝=运行/选中,琥珀=警告,绿=通过,红=破坏) */
   --status-ok: oklch(0.55 0.14 152);
@@ -52,10 +58,12 @@
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
+  --color-faint: var(--faint);
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
   --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
   --color-input: var(--input);
   --color-ring: var(--ring);
   --color-focus: var(--focus);
@@ -82,4 +90,57 @@ body,
 body {
   /* 原型 brand-spec:13px 正文、letter-spacing 0.01em、overflow:hidden 防滚动条 */
   @apply bg-background text-foreground overflow-hidden font-sans text-[13px] tracking-[0.01em];
+}
+
+/* ── 全局细节(原型 <style> 头部同款) ── */
+
+/* 细滚动条:thumb 用 border-strong 色、content-box 内缩成胶囊(原型
+   ::-webkit-scrollbar / ::-webkit-scrollbar-thumb) */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 99px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--faint);
+  background-clip: content-box;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* 键盘焦点统一 2px ring(原型 :focus-visible) */
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+  border-radius: 4px;
+}
+
+/* 选中文字 = 状态蓝的淡形态(颜色即状态) */
+::selection {
+  background: color-mix(in oklch, var(--focus) 25%, transparent);
+}
+
+/* 发丝分隔线(原型 .hr) */
+.hr {
+  height: 1px;
+  background: var(--border);
+  border: 0;
+  margin: 0;
+}
+
+/* toast 入场:8px 上浮渐显(原型 @keyframes rise),节奏走 --transition */
+@keyframes toast-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+.toast-rise {
+  animation: toast-rise var(--transition) ease;
 }

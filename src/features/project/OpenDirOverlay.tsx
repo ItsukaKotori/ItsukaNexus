@@ -1,6 +1,8 @@
-// 打开目录(原型 openDirOverlay):手输 + 原生浏览 + 最近打开(=注册表)。
+// 打开目录(原型 openDirOverlay/palette):手输 + 原生浏览 + 最近打开(=注册表)。
+// 面板对齐原型 .palette:13vh 顶部落下、border-strong 描边、r-lg 圆角、pop 阴影。
 // 提交即 project_add(后端校验 git 仓库、归一 canonical、追加 exclude)。
 import { useCallback, useEffect, useState } from "react";
+import { Folder, FolderOpen } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 
 import { Button } from "@/components/ui/button";
@@ -55,51 +57,66 @@ export default function OpenDirOverlay({ openState, onOpenChange }: Props) {
 
   return (
     <Dialog open={openState} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>打开项目目录</DialogTitle>
+      {/* 原型 .palette:顶部 13vh、r-lg(→rounded-xl)、border-strong、pop 阴影
+          (top/translate 用 ! 压过 DialogContent 默认的居中定位) */}
+      <DialogContent className="top-[13vh]! translate-y-0! gap-0 overflow-hidden rounded-xl border-border-strong p-0 shadow-[0_10px_24px_oklch(0.2_0_0_/_0.22)] sm:max-w-md">
+        <DialogHeader className="border-b border-border px-4 py-3">
+          <DialogTitle className="text-sm font-semibold">打开项目目录</DialogTitle>
         </DialogHeader>
-        <div className="grid gap-3 py-1">
-          <div className="flex gap-2">
-            <Input
-              value={path}
-              placeholder="/path/to/repo(须为 git 仓库)"
-              onChange={(e) => setPath(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") void submit();
-              }}
-            />
-            <Button variant="secondary" onClick={() => void browse()}>
-              浏览…
-            </Button>
-          </div>
-          {projects.length > 0 && (
-            <div>
-              <p className="mb-1 text-xs text-muted-foreground">最近打开</p>
-              <div className="max-h-40 overflow-y-auto">
-                {projects.map((p) => (
-                  <button
-                    key={p.id}
-                    type="button"
-                    onClick={() => setPath(p.path)}
-                    className="flex w-full items-center justify-between rounded px-2 py-1 text-left text-xs hover:bg-accent"
-                  >
-                    <span>{p.name}</span>
-                    <span className="truncate pl-3 font-mono text-[10px] text-muted-foreground">
-                      {p.path}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-          {err && <p className="text-xs text-destructive">{err}</p>}
+        {/* 输入行(原型 .pinput):前置 Folder 图标 + 无边框透明输入 */}
+        <div className="flex items-center gap-2 px-4 py-3">
+          <Folder className="size-4 shrink-0 text-muted-foreground" />
+          <Input
+            value={path}
+            placeholder="/path/to/repo(须为 git 仓库)"
+            onChange={(e) => setPath(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void submit();
+            }}
+            className="h-8 rounded-md border-0 bg-transparent px-0 text-[13px] shadow-none focus-visible:border-0 focus-visible:shadow-none focus-visible:ring-0 placeholder:text-faint"
+          />
+          <Button variant="secondary" size="sm" onClick={() => void browse()}>
+            <FolderOpen className="size-3.5" />
+            浏览…
+          </Button>
         </div>
-        <DialogFooter>
-          <Button variant="ghost" onClick={() => onOpenChange(false)}>
+        {projects.length > 0 && (
+          <div className="border-t border-border p-1.5">
+            {/* 原型 .lab:11px/600/大写字距 */}
+            <p className="px-2 pt-1.5 pb-1 text-[11px] font-semibold tracking-[0.05em] text-muted-foreground">
+              最近打开
+            </p>
+            <div className="max-h-40 overflow-y-auto p-1">
+              {projects.map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => setPath(p.path)}
+                  className="flex w-full items-center justify-between gap-3 rounded-md px-2.5 py-2 text-left text-[12.5px] transition-colors duration-130 hover:bg-accent hover:text-foreground"
+                >
+                  <span className="shrink-0">{p.name}</span>
+                  <span className="truncate font-mono text-[10.5px] text-faint">
+                    {p.path}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {err && (
+          <p className="border-t border-border px-4 py-2 text-[11px] text-destructive">
+            {err}
+          </p>
+        )}
+        <DialogFooter className="gap-2 border-t border-border px-4 py-3">
+          <Button variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
             取消
           </Button>
-          <Button onClick={() => void submit()} disabled={submitting || !path.trim()}>
+          <Button
+            size="sm"
+            onClick={() => void submit()}
+            disabled={submitting || !path.trim()}
+          >
             {submitting ? "打开中…" : "打开"}
           </Button>
         </DialogFooter>

@@ -1,7 +1,8 @@
 // 左栏(spec §1.5):标题行 + git 探测条 + 项目树。打开目录走 OpenDirOverlay
 // (失败经全局 toast 报告,行内红字留在弹层内)。
+// 标题行对齐原型 .side-head:11px/600/字距 .05em muted + 26×26 圆角悬停「+」。
 import { useState } from "react";
-import { FolderPlus } from "lucide-react";
+import { Plus } from "lucide-react";
 
 import type { GitCheckInfo } from "../../ipc/types";
 import ProjectTree from "./ProjectTree";
@@ -12,17 +13,17 @@ export default function ProjectSide({ gitInfo }: { gitInfo: GitCheckInfo | null 
 
   return (
     <aside className="flex min-w-0 flex-1 flex-col">
-      <div className="flex min-h-[37px] items-center justify-between border-b border-border pr-2 pl-3">
-        <span className="text-xs font-semibold tracking-wide text-muted-foreground">
+      <div className="flex min-h-[37px] items-center justify-between border-b border-border pr-2.5 pl-3">
+        <span className="text-[11px] font-semibold tracking-[0.05em] text-muted-foreground">
           项目
         </span>
         <button
           type="button"
           title="打开项目目录"
           onClick={() => setOpenDir(true)}
-          className="grid size-6 place-items-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+          className="grid size-[26px] place-items-center rounded-md text-muted-foreground transition-colors duration-130 hover:bg-accent hover:text-foreground"
         >
-          <FolderPlus className="size-4" />
+          <Plus className="size-4" />
         </button>
       </div>
       {gitInfo && !gitInfo.worktreeSupported && (

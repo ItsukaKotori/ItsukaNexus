@@ -1,8 +1,9 @@
 // 多类型标签条(原型 tabstrip):状态点 + 标题 + kind 徽标 + 关闭钮 + 「+」。
+// 激活 tab = surface 底 + inset 顶部 2px accent 线(box-shadow,不占布局)。
 // 数据:tabStore(视图)+ sessionsStore(状态点);关闭回调走 App 的 M3
 // dispose 流程(handleClose);「+」即时建终端,不弹对话框(orca 哲学)。
 import { useCallback } from "react";
-import { Plus } from "lucide-react";
+import { Plus, X } from "lucide-react";
 
 import {
   DropdownMenu,
@@ -18,8 +19,11 @@ import { useSessions } from "../../stores/sessionsStore";
 import { useTabs } from "../../stores/tabStore";
 import { toast } from "../../stores/toastStore";
 
+// 会话状态点(原型 .dot):run 蓝 + 3px 柔光环(color-mix 22%),其余纯色
+const RUN_GLOW =
+  "shadow-[0_0_0_3px_color-mix(in_oklch,var(--status-run)_22%,transparent)]";
 const DOT: Record<SessionState, string> = {
-  running: "bg-status-run",
+  running: `bg-status-run ${RUN_GLOW}`,
   stopping: "bg-status-warn",
   exited: "bg-gray-400",
   failed: "bg-status-err",
@@ -66,7 +70,7 @@ export default function TabStrip({ onClose }: Props) {
   }, [selected]);
 
   return (
-    <div className="flex min-h-[37px] items-stretch border-b border-border">
+    <div className="flex h-[37px] items-stretch border-b border-border">
       <div className="flex min-w-0 items-stretch overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {tabs.map((tab) => {
           const state = sessions[tab.sessionId]?.state;
@@ -86,9 +90,9 @@ export default function TabStrip({ onClose }: Props) {
                 }
               }}
               title={tab.repoPath ?? tab.sessionId}
-              className={`flex max-w-[232px] cursor-pointer items-center gap-1.5 border-r border-border px-2.5 text-xs whitespace-nowrap select-none ${
+              className={`group/ptab flex max-w-[232px] cursor-pointer items-center gap-1.5 border-r border-border px-2.5 text-xs whitespace-nowrap select-none transition-colors duration-130 ${
                 active
-                  ? "border-t-2 border-t-focus bg-card text-foreground"
+                  ? "bg-card text-foreground shadow-[inset_0_2px_0_var(--focus)]"
                   : "text-muted-foreground hover:bg-accent hover:text-foreground"
               }`}
             >
@@ -115,27 +119,30 @@ export default function TabStrip({ onClose }: Props) {
                   e.stopPropagation();
                   onClose(tab.sessionId);
                 }}
-                className="grid size-4 place-items-center rounded text-muted-foreground/60 hover:bg-secondary hover:text-foreground"
+                className={`grid size-4 shrink-0 place-items-center rounded transition-[opacity,background-color] duration-130 hover:bg-secondary hover:opacity-100 ${
+                  active ? "opacity-65" : "opacity-0 group-hover/ptab:opacity-65"
+                }`}
               >
-                ×
+                <X className="size-3" />
               </span>
             </div>
           );
         })}
       </div>
-      <div className="ml-auto flex items-center pr-2">
+      {/* 「+」区(原型 .addtab):34px 宽,左缘独立发丝分隔 */}
+      <div className="ml-auto flex items-stretch">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button
               type="button"
               title="新建标签页"
               aria-label="新建标签页"
-              className="grid size-6 place-items-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+              className="grid w-[34px] cursor-pointer place-items-center border-l border-border text-muted-foreground transition-colors duration-130 hover:bg-accent hover:text-foreground"
             >
               <Plus className="size-4" />
             </button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
+          <DropdownMenuContent align="end" className="rounded-lg text-[12.5px]">
             <DropdownMenuItem disabled={!selected} onClick={() => void newTerminal()}>
               新建终端{selectedLabel ? ` · ${selectedLabel}` : ""}
             </DropdownMenuItem>

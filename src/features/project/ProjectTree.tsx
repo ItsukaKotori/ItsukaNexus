@@ -11,8 +11,11 @@ import { useSessions } from "../../stores/sessionsStore";
 import { useTabs } from "../../stores/tabStore";
 import { toast } from "../../stores/toastStore";
 
+// 会话状态点(原型 .dot):run 蓝 + 3px 柔光环(color-mix 22%),其余纯色
+const RUN_GLOW =
+  "shadow-[0_0_0_3px_color-mix(in_oklch,var(--status-run)_22%,transparent)]";
 const DOT: Record<string, string> = {
-  running: "bg-status-run",
+  running: `bg-status-run ${RUN_GLOW}`,
   stopping: "bg-status-warn",
   exited: "bg-gray-400",
   failed: "bg-status-err",
@@ -33,7 +36,7 @@ function SessionRow({ snap }: { snap: SessionSnapshot }) {
         });
         useTabs.getState().setActive(`term-${snap.sessionId}`);
       }}
-      className={`flex w-full items-center gap-1.5 py-0.5 pr-2 pl-[50px] text-left text-xs ${
+      className={`flex w-full items-center gap-1.5 rounded-md py-1 pr-2 pl-[50px] text-left text-[11.5px] transition-colors duration-130 ${
         mine ? "bg-card text-foreground" : "text-muted-foreground hover:bg-accent"
       }`}
     >
@@ -62,7 +65,7 @@ function ProjectRow({
         onClick={() =>
           useProjects.getState().select({ repoPath: project.path })
         }
-        className={`flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-[13px] ${
+        className={`flex h-8 w-full items-center gap-1.5 rounded-md px-2 text-left text-[12.5px] transition-colors duration-130 ${
           mine ? "bg-card text-foreground" : "text-foreground hover:bg-accent"
         }`}
       >
@@ -86,7 +89,7 @@ function ProjectRow({
               toast(`移除项目失败:${String(e)}`, "error")
             );
           }}
-          className="hidden shrink-0 rounded p-0.5 text-muted-foreground/60 hover:bg-secondary hover:text-foreground group-hover/project:block"
+          className="hidden size-4 shrink-0 place-items-center rounded text-muted-foreground/60 hover:bg-secondary hover:text-foreground group-hover/project:grid"
         >
           <X className="size-3" />
         </span>
@@ -105,7 +108,7 @@ function ProjectRow({
                   .getState()
                   .select({ repoPath: project.path, worktreeName: w.name })
               }
-              className={`flex w-full items-center gap-1.5 py-0.5 pr-2 pl-[34px] text-left text-xs ${
+              className={`flex w-full items-center gap-1.5 rounded-md py-1 pr-2 pl-9 text-left text-[11px] transition-colors duration-130 ${
                 selected?.repoPath === project.path && selected?.worktreeName === w.name
                   ? "bg-card text-foreground"
                   : "text-muted-foreground hover:bg-accent"
@@ -129,13 +132,13 @@ export default function ProjectTree() {
 
   if (projects.length === 0) {
     return (
-      <p className="p-4 text-center text-xs text-muted-foreground">
+      <p className="p-4 text-center text-[12.5px] text-muted-foreground">
         还没有项目——点右上角「打开目录」开始
       </p>
     );
   }
   return (
-    <div className="flex-1 overflow-y-auto px-1.5 py-2">
+    <div className="flex-1 overflow-y-auto px-2 pt-2 pb-3.5">
       {projects.map((p) => {
         const mine = Object.values(sessions).filter(
           (s) => s.repoPath === p.path
@@ -146,7 +149,7 @@ export default function ProjectTree() {
           byWorktree.set(key, [...(byWorktree.get(key) ?? []), s]);
         }
         return (
-          <div key={p.id} className="mb-1">
+          <div key={p.id} className="mb-1.5">
             <ProjectRow project={p} byWorktree={byWorktree} />
             {/* 挂项目根的会话(无 worktree) */}
             {(byWorktree.get("") ?? []).map((s) => (

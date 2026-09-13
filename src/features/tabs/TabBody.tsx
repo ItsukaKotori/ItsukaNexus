@@ -23,7 +23,7 @@ export default function TabBody({ onFitted }: Props) {
         </div>
       ))}
       {tabs.length === 0 && (
-        <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+        <div className="flex h-full items-center justify-center text-[12.5px] text-muted-foreground">
           暂无标签——从左侧项目树或标签栏「+」开始
         </div>
       )}

@@ -98,7 +98,7 @@ export default function NewWorktreePopover({ repoPath, onDone }: Props) {
           role="button"
           aria-label="新建 worktree"
           title="新建 worktree"
-          className="hidden shrink-0 rounded p-0.5 text-muted-foreground/60 hover:bg-secondary hover:text-foreground group-hover/project:block"
+          className="hidden size-4 shrink-0 place-items-center rounded text-muted-foreground/60 transition-colors duration-130 hover:bg-secondary hover:text-foreground group-hover/project:grid"
         >
           <Plus className="size-3" />
         </span>
