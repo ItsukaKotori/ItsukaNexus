@@ -81,7 +81,7 @@ export default function TerminalPane({ sessionId, onFitted }: Props) {
         className="h-full w-full min-h-0 min-w-0"
       />
       {!terminal && (
-        <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/60 text-sm text-gray-300">
+        <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/70 text-sm text-muted-foreground">
           会话已结束(输入已禁用,可关闭 tab)
         </div>
       )}

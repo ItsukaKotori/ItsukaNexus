@@ -6,14 +6,14 @@ const STATE_META: Record<
   SessionState,
   { label: string; text: string; dot: string }
 > = {
-  running: { label: "Running", text: "text-green-500", dot: "bg-green-500" },
+  running: { label: "Running", text: "text-emerald-700", dot: "bg-emerald-600" },
   stopping: {
     label: "Stopping",
-    text: "text-amber-500",
-    dot: "bg-amber-500",
+    text: "text-amber-700",
+    dot: "bg-amber-600",
   },
-  exited: { label: "Exited", text: "text-gray-400", dot: "bg-gray-400" },
-  failed: { label: "Failed", text: "text-red-500", dot: "bg-red-500" },
+  exited: { label: "Exited", text: "text-gray-500", dot: "bg-gray-400" },
+  failed: { label: "Failed", text: "text-red-700", dot: "bg-red-600" },
 };
 
 interface Props {

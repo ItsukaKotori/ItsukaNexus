@@ -1,33 +1,42 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
-/* dark: 变体确定性 inert:vendored shadcn 组件内含 dark: 类,默认 v4 语义是
-   prefers-color-scheme 媒体查询(系统浅色时不生效、深色时误启)。
-   本应用暗色为唯一主题(变量直接落 :root、永不挂 .dark),收紧为类选择器后
-   dark: 类恒不生效,组件外观跨系统主题稳定(T6 审查 carry)。 */
+/* dark: 变体确定性 inert:vendored shadcn 组件内含 dark: 类,默认 v4 语义跟
+   prefers-color-scheme 走;本应用亮色唯一(永不挂 .dark),收紧为类选择器后
+   dark: 类恒不生效,组件外观跨系统主题稳定。 */
 @custom-variant dark (&:where(.dark, .dark *));
 
-/* 暗色为唯一主题:shadcn 的 .dark 变量直接落 :root(桌面终端工具,无亮色切换) */
+/* 亮色为唯一主题(spec v1.2):原型 astra-ade-prototype-v2 的 light 令牌。
+   结构全走 CSS 变量——未来加暗色只增 .dark 块,零重构。 */
 :root {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --radius: 0.625rem;
+  --background: oklch(0.985 0 0);
+  --foreground: oklch(0.18 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.18 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.18 0 0);
+  /* 主操作色:亮色下是近黑(原型 primary 反转语义) */
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.18 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.50 0 0);
+  --accent: oklch(0.955 0 0);
+  --accent-foreground: oklch(0.18 0 0);
+  --destructive: oklch(0.55 0.2 25);
+  --border: oklch(0.20 0 0 / 0.12);
+  --input: oklch(0.20 0 0 / 0.16);
+  --ring: oklch(0.52 0.17 255 / 0.45);
+  --radius: 0.5rem;
+
+  /* 状态色(brand-spec:颜色即状态——蓝=运行/选中,琥珀=警告,绿=通过,红=破坏) */
+  --status-ok: oklch(0.55 0.14 152);
+  --status-warn: oklch(0.62 0.13 75);
+  --status-run: oklch(0.52 0.16 250);
+  --status-err: oklch(0.55 0.2 25);
+  /* 选中环/焦点(accent 蓝的实色形态,ring 是它的透明形态) */
+  --focus: oklch(0.52 0.17 255);
 }
 
 @theme inline {
@@ -49,10 +58,19 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  --color-focus: var(--focus);
+  --color-status-ok: var(--status-ok);
+  --color-status-warn: var(--status-warn);
+  --color-status-run: var(--status-run);
+  --color-status-err: var(--status-err);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
+
+  /* 字体(spec §1.5:Geist 正文 + JetBrains Mono 等宽,均本地打包) */
+  --font-sans: "Geist Variable", -apple-system, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
 }
 
 html,
@@ -62,6 +80,6 @@ body,
 }
 
 body {
-  /* overflow:hidden:100vh 布局防常驻滚动条(沿用 M0 全局重置语义) */
-  @apply bg-background text-foreground overflow-hidden;
+  /* 原型 brand-spec:13px 正文、letter-spacing 0.01em、overflow:hidden 防滚动条 */
+  @apply bg-background text-foreground overflow-hidden font-sans text-[13px] tracking-[0.01em];
 }

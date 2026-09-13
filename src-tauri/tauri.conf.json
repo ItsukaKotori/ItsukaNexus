@@ -14,7 +14,9 @@
       {
         "title": "ItsukaNexus",
         "width": 800,
-        "height": 600
+        "height": 600,
+        "minWidth": 960,
+        "minHeight": 600
       }
     ],
     "security": {
