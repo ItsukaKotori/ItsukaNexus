@@ -11,6 +11,7 @@ use nexus_core::agent::manager::{SessionEvent, SessionManager};
 use nexus_core::gitx::cli::GitCliOps;
 use nexus_core::gitx::ops::GitOps;
 use nexus_core::gitx::worktree::{WorktreeChanged, WorktreeManager};
+use nexus_core::registry::ProjectRegistry;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -42,7 +43,12 @@ pub fn run() {
                 let _ = wt_handle.emit("worktree://changed", ev);
             });
             let ops: Arc<dyn GitOps> = Arc::new(GitCliOps::new());
-            app.manage(WorktreeManager::new(ops, wt_events));
+            app.manage(WorktreeManager::new(ops.clone(), wt_events));
+            // 项目注册表:与 WorktreeManager 共享同一 GitOps 实例
+            app.manage(ProjectRegistry::new(
+                app.path().app_config_dir().expect("解析应用配置目录失败"),
+                ops,
+            ));
             app.manage(ConfigDir(
                 app.path().app_config_dir().expect("解析应用配置目录失败"),
             ));
@@ -63,7 +69,13 @@ pub fn run() {
             commands::git_validate_repo,
             commands::worktree_list,
             commands::worktree_create,
-            commands::worktree_remove
+            commands::worktree_remove,
+            commands::project_list,
+            commands::project_add,
+            commands::project_remove,
+            commands::git_status,
+            commands::git_stage,
+            commands::git_commit
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -15,7 +15,8 @@ import {
 } from "../../ipc/commands";
 import type { AppConfig, PtyChunk, TerminalConfig } from "../../ipc/types";
 
-const DEFAULT_FONT_STACK = "Menlo, Monaco, 'Courier New', monospace";
+const DEFAULT_FONT_STACK =
+  "JetBrains Mono, ui-monospace, 'SF Mono', Menlo, monospace";
 
 interface Entry {
   terminal: Terminal;
@@ -65,6 +66,13 @@ export function createEntry(id: string): Entry {
     fontSize: config.fontSize,
     cursorBlink: true,
     scrollback: config.scrollback,
+    // 亮色主题(令牌的 xterm 端字面量;xterm 需要具体颜色值,不接受 CSS 变量)
+    theme: {
+      background: "#fafafa", // ≈ oklch(0.985 0 0)
+      foreground: "#242424", // ≈ oklch(0.18 0 0)
+      cursor: "#242424",
+      selectionBackground: "rgba(85, 120, 220, 0.25)", // ≈ focus 蓝
+    },
   });
   const fit = new FitAddon();
   terminal.loadAddon(fit);

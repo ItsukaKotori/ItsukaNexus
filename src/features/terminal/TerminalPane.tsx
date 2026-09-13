@@ -28,17 +28,19 @@ export default function TerminalPane({ sessionId, onFitted }: Props) {
   const onFittedRef = useRef(onFitted);
   onFittedRef.current = onFitted;
 
-  // 终态(Exited/Failed)→ 遮罩 + 输入门禁;未知(undefined,store 未及)按活着处理
+  // running 才放行输入;stopping 也关闸(M-4:击键只会收获后端错误,顺手消除
+  // console 噪音);undefined(store 未及)按活着处理。遮罩仍只对终态。
   const state = useSessions((s) => s.sessions[sessionId]?.state);
-  const terminal = state === "running" || state === "stopping" || state === undefined;
+  const alive = state === "running" || state === undefined;
+  const masked = state === "exited" || state === "failed";
   // 镜像给挂载 effect:实例创建时同步落门禁(启动恢复即终态的会话,
   // setClosed effect 先跑、实例尚不存在,必须在 createEntry 后补一次)
-  const terminalRef = useRef(terminal);
-  terminalRef.current = terminal;
+  const aliveRef = useRef(alive);
+  aliveRef.current = alive;
 
   useEffect(() => {
-    setClosed(sessionId, !terminal);
-  }, [sessionId, terminal]);
+    setClosed(sessionId, !alive);
+  }, [sessionId, alive]);
 
   // effect:实例挂载 + attach + 尺寸观察(sessionId 变化即重建编排;
   // cleanup 不 dispose 实例——tab 只藏不卸,释放只在 App closeTab)
@@ -48,7 +50,7 @@ export default function TerminalPane({ sessionId, onFitted }: Props) {
 
     let entry = getEntry(sessionId);
     if (!entry) entry = createEntry(sessionId);
-    setClosed(sessionId, !terminalRef.current);
+    setClosed(sessionId, !aliveRef.current);
 
     // fit:容器可见才做(隐藏时字宽测量为 0,fit 出来的尺寸是垃圾)
     const fitNow = (): void => {
@@ -80,8 +82,8 @@ export default function TerminalPane({ sessionId, onFitted }: Props) {
         ref={containerRef}
         className="h-full w-full min-h-0 min-w-0"
       />
-      {!terminal && (
-        <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/60 text-sm text-gray-300">
+      {masked && (
+        <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/70 text-sm text-muted-foreground">
           会话已结束(输入已禁用,可关闭 tab)
         </div>
       )}

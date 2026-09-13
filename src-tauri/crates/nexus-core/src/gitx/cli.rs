@@ -1,7 +1,7 @@
 // GitCliOps:tokio::process 调 git CLI。一律 `git -C <path>`,不依赖进程 cwd。
 use std::path::{Path, PathBuf};
 
-use super::ops::{GitCheckInfo, GitOps, RepoInfo, WorktreeInfo};
+use super::ops::{GitCheckInfo, GitOps, GitStatus, RepoInfo, WorktreeInfo};
 use crate::error::NexusError;
 
 pub struct GitCliOps {
@@ -45,6 +45,39 @@ impl GitCliOps {
         }
         Ok(String::from_utf8_lossy(&out.stdout).to_string())
     }
+
+    /// 同 run,但注入环境变量(如 GIT_OPTIONAL_LOCKS=0:只读探测不抢 index.lock)
+    async fn run_env(
+        &self,
+        repo: Option<&Path>,
+        args: &[&str],
+        envs: &[(&str, &str)],
+    ) -> Result<String, NexusError> {
+        let mut cmd = tokio::process::Command::new(&self.git_bin);
+        if let Some(r) = repo {
+            cmd.arg("-C").arg(r);
+        }
+        cmd.args(args);
+        for (k, v) in envs {
+            cmd.env(k, v);
+        }
+        let cmd_repr = format!("{args:?}");
+        let out = cmd
+            .output()
+            .await
+            .map_err(|e| NexusError::GitUnavailable(format!("无法执行 git({e})")))?;
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            return Err(NexusError::GitCommand {
+                cmd: cmd_repr,
+                stderr,
+            });
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    /// status 条目上限(spec §1.3):超出截断并置 truncated
+    const STATUS_ENTRY_CAP: usize = 2000;
 }
 
 impl Default for GitCliOps {
@@ -196,6 +229,51 @@ impl GitOps for GitCliOps {
         // prune 吸收失败:残留元数据无害
         let _ = self.run(Some(repo), &["worktree", "prune"]).await;
         Ok(())
+    }
+
+    async fn status(&self, repo: &Path) -> Result<GitStatus, NexusError> {
+        // -z:路径原样(非 ASCII 不转义)、rename 无歧义;头记录分隔随 git 版本
+        // 有 NUL/\n 二态,解析器两态都认(见 status.rs 模块注释)
+        let out = self
+            .run_env(
+                Some(repo),
+                &[
+                    "status",
+                    "--porcelain=v2",
+                    "--branch",
+                    "--untracked-files=all",
+                    "-z",
+                ],
+                &[("GIT_OPTIONAL_LOCKS", "0")],
+            )
+            .await?;
+        Ok(super::status::parse_status_porcelain_v2(
+            &out,
+            Self::STATUS_ENTRY_CAP,
+        ))
+    }
+
+    async fn stage(&self, repo: &Path, paths: Option<&[PathBuf]>) -> Result<(), NexusError> {
+        match paths {
+            None => self.run(Some(repo), &["add", "-A"]).await.map(|_| ()),
+            Some([]) => Ok(()),
+            Some(list) => {
+                let mut args: Vec<String> = vec!["add".into(), "--".into()];
+                args.extend(list.iter().map(|p| p.to_string_lossy().into_owned()));
+                let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+                self.run(Some(repo), &arg_refs).await.map(|_| ())
+            }
+        }
+    }
+
+    async fn commit(&self, repo: &Path, message: &str) -> Result<(), NexusError> {
+        let msg = message.trim();
+        if msg.is_empty() {
+            return Err(NexusError::InvalidInput("提交信息不能为空".into()));
+        }
+        self.run(Some(repo), &["commit", "-m", msg])
+            .await
+            .map(|_| ())
     }
 }
 

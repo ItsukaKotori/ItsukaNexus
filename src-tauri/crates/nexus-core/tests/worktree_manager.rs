@@ -145,6 +145,53 @@ async fn paths_with_spaces_and_cjk_work() {
     assert!(!info.path.exists());
 }
 
+/// 必办#6(T8-③):base_ref 生效——从首笔提交建 worktree,HEAD 应停在首笔
+#[tokio::test]
+async fn create_from_explicit_base_ref_checks_out_that_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo_at(dir.path());
+    let first = String::from_utf8(
+        Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+    // 第二笔
+    std::fs::write(dir.path().join("second.txt"), "2\n").unwrap();
+    let run = |args: &[&str]| {
+        Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(args)
+            .status()
+            .unwrap()
+    };
+    assert!(run(&["add", "."]).success());
+    assert!(run(&["commit", "-qm", "second"]).success());
+
+    let (mgr, _events) = manager_with_events();
+    let info = mgr.create(dir.path(), "shell", Some(&first)).await.unwrap();
+    let wt_head = String::from_utf8(
+        Command::new("git")
+            .arg("-C")
+            .arg(&info.path)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+    assert_eq!(wt_head, first, "worktree 应停在 base_ref 指定提交");
+}
+
 #[tokio::test]
 async fn remove_unknown_name_errors() {
     let dir = tempfile::tempdir().unwrap();

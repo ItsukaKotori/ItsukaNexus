@@ -46,6 +46,21 @@ impl WorktreeManager {
         self.ops.validate_repo(path).await
     }
 
+    /// 工作区状态(porcelain v2,Task 8 Git 面板数据源)。
+    pub async fn status(&self, repo: &Path) -> Result<super::ops::GitStatus, NexusError> {
+        self.ops.status(repo).await
+    }
+
+    /// 暂存:None = 全部。
+    pub async fn stage(&self, repo: &Path, paths: Option<&[PathBuf]>) -> Result<(), NexusError> {
+        self.ops.stage(repo, paths).await
+    }
+
+    /// 提交暂存区;空信息 InvalidInput。
+    pub async fn commit(&self, repo: &Path, message: &str) -> Result<(), NexusError> {
+        self.ops.commit(repo, message).await
+    }
+
     /// 创建 nexus 命名规范的 worktree(分支 = 目录 = name):
     /// `git worktree add -b <name> <repo>/.nx-worktrees/<name> [base_ref]`,
     /// 成功后 emit Created。

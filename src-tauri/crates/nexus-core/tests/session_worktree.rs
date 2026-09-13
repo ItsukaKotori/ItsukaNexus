@@ -75,3 +75,45 @@ async fn session_runs_inside_created_worktree_and_cleans_up() {
         .expect("worktree remove 失败");
     assert!(!wt.path.exists(), "显式清理后 worktree 目录应删除");
 }
+
+/// M4 终审 I-1 对应物:repo_path 单独给出(worktree_name None)= cwd 落
+/// 项目根(TabStrip「+」选中项目根即时开终端的形态)。断言 pwd 落在该
+/// 目录、快照 worktree_name 为 None、repo_path 原样透传。
+#[tokio::test]
+async fn session_with_repo_path_only_lands_at_project_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mgr, mut sink_rx) = manager_with_channel();
+    let spec = LaunchSpec {
+        cwd: dir.path().to_path_buf(),
+        repo_path: Some(dir.path().to_string_lossy().into_owned()),
+        worktree_name: None,
+    };
+    let id = mgr.create("shell", 100, 30, Some(&spec)).await.unwrap();
+    let sub = mgr.subscribe(id).expect("subscribe 失败");
+    let mut frames = sub.rx;
+
+    let snap = mgr
+        .list()
+        .into_iter()
+        .find(|s| s.session_id == id)
+        .expect("会话应在表中");
+    assert_eq!(
+        snap.repo_path.as_deref(),
+        Some(dir.path().to_string_lossy().as_ref()),
+        "快照应带回 repo_path"
+    );
+    assert!(
+        snap.worktree_name.is_none(),
+        "(Some, None) 场景快照 worktree_name 应为 None"
+    );
+
+    // pwd 落在该目录(create 侧已 canonicalize,断言侧同型归一)
+    mgr.send_input(id, "pwd\n").await.expect("send 失败");
+    let canon = dir.path().canonicalize().unwrap();
+    wait_frame_contains(&mut frames, &canon.to_string_lossy()).await;
+
+    mgr.send_input(id, "exit\n").await.expect("send 失败");
+    let code = wait_exit(&mut sink_rx, id).await;
+    assert_eq!(code, 0, "自然退出的 shell 退出码应为 0");
+    mgr.dispose(id).expect("终态会话应可 dispose");
+}

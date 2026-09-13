@@ -4,10 +4,12 @@
 // 只搬函数搬不走宏;glob 能把函数与隐藏宏一并带上。
 pub mod app;
 pub mod config;
+pub mod project;
 pub mod session;
 pub mod worktree;
 
 pub use app::*;
 pub use config::*;
+pub use project::*;
 pub use session::*;
 pub use worktree::*;

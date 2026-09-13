@@ -1,8 +1,5 @@
-// M3 AppShell:顶栏(应用信息 + git 状态 + 新建)+ 会话 tab 栏 + 常驻终端区。
-// 所有会话的 pane 恒久挂载,display 切换可见性——输出直达 term.write,
-// 状态经全局事件驱动 store,React 只负责壳(spec §1.5)。
-// M3:新建走 NewSessionDialog(repo/worktree);关 tab 即删(dispose + 可选
-// 清 worktree);顶栏展示 git_check 探测结果(worktree 功能可用性引导)。
+// M4 组装根:启动恢复 + 全局事件 + 关 tab 流程(M3 语义不变)。
+// 布局在 app/Workbench;会话数据 sessionsStore,tab 视图 tabStore。
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
@@ -15,13 +12,12 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 
-import NewSessionDialog from "./features/launch/NewSessionDialog";
-import TerminalPane from "./features/terminal/TerminalPane";
-import TerminalTabs from "./features/terminal/TerminalTabs";
+import Toaster from "@/components/Toaster";
+
+import Workbench from "./app/Workbench";
 import {
   disposeEntry,
   resizeSession,
@@ -30,7 +26,6 @@ import {
 } from "./features/terminal/terminalManager";
 import {
   configGet,
-  getAppInfo,
   gitCheck,
   sessionDispose,
   sessionList,
@@ -41,21 +36,19 @@ import {
   onSessionStateEvent,
   onWorktreeChanged,
 } from "./ipc/events";
-import type { AppInfo, GitCheckInfo } from "./ipc/types";
+import type { GitCheckInfo } from "./ipc/types";
+import { useProjects } from "./stores/projectStore";
 import { useSessions } from "./stores/sessionsStore";
-import { useWorktrees } from "./stores/worktreeStore";
+import { useTabs } from "./stores/tabStore";
+import { toast } from "./stores/toastStore";
 
 function App() {
-  const sessions = useSessions((s) => s.sessions);
-  const activeId = useSessions((s) => s.activeId);
-  const setActive = useSessions((s) => s.setActive);
   const hydrate = useSessions((s) => s.hydrate);
-  const closeTab = useSessions((s) => s.closeTab);
+  // 确认框打开期间后台自行退出的观察依赖(effect 按 sessions 快照变化重跑)
+  const sessions = useSessions((s) => s.sessions);
 
-  const [info, setInfo] = useState<AppInfo | null>(null);
+  // git 探测结果经 props 传 ProjectSide(左栏黄条)
   const [gitInfo, setGitInfo] = useState<GitCheckInfo | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [newDialogOpen, setNewDialogOpen] = useState(false);
   // 启动流程只跑一次(StrictMode 下 effect 双执行)
   const bootedRef = useRef(false);
   // 关闭收尾在途的会话:确认框重复确认/收尾中再点不去重入 stop(仅 Running 可停)
@@ -68,16 +61,11 @@ function App() {
   } | null>(null);
   const [alsoRemoveWt, setAlsoRemoveWt] = useState(true);
 
-  // 启动恢复:app_info → config 注入(先于任何终端实例创建)→ git 探测 → session_list
+  // 启动恢复:config 注入(先于任何终端实例创建)→ git 探测 → session_list(并重建 tab 视图)
   useEffect(() => {
     if (bootedRef.current) return;
     bootedRef.current = true;
     void (async () => {
-      try {
-        setInfo(await getAppInfo());
-      } catch (e) {
-        console.error("[app] app_info 失败", e);
-      }
       try {
         setTerminalConfig((await configGet()).terminal);
       } catch (e) {
@@ -86,17 +74,21 @@ function App() {
       try {
         setGitInfo(await gitCheck());
       } catch (e) {
-        console.error("[app] git_check 失败,顶栏不展示 git 状态", e);
+        console.error("[app] git_check 失败", e);
       }
       try {
-        hydrate(await sessionList());
+        // 项目树异步填充:不 await,不阻塞会话恢复
+        void useProjects.getState().loadAll();
+        const snaps = await sessionList();
+        hydrate(snaps);
+        useTabs.getState().rebuildFromSessions(snaps);
       } catch (e) {
         console.error("[app] session_list 失败,按空会话启动", e);
       }
     })();
-  }, []);
+  }, [hydrate]);
 
-  // 全局事件 → store(订阅随组件生命周期;StrictMode 重挂会重订,事件幂等)
+  // 全局事件 → store(worktree://changed 由 projectStore 接收)
   useEffect(() => {
     const unState = onSessionStateEvent((sc) =>
       useSessions.getState().onState(sc.sessionId, sc.next)
@@ -105,7 +97,7 @@ function App() {
       useSessions.getState().onExit(ev)
     );
     const unWt = onWorktreeChanged((ev) =>
-      useWorktrees.getState().applyChange(ev)
+      useProjects.getState().applyWorktreeChange(ev)
     );
     return () => {
       void unState.then((u) => u());
@@ -114,47 +106,39 @@ function App() {
     };
   }, []);
 
-  // 新建:打开对话框(repo 选择 + git 校验 + 可选 worktree 都在里面完成)
-  const handleNew = useCallback(() => {
-    setError(null);
-    setNewDialogOpen(true);
-  }, []);
-
   // pane fit 上报 → 后端 resize(80x24 创建的初始校正 + 窗口变化)
   const handleFitted = useCallback((id: string, cols: number, rows: number) => {
     resizeSession(id, cols, rows);
   }, []);
 
-  // 关 tab(关 tab 即删):
-  // - 终态:sessionDispose(Rust 侧删条目)+ 本地移除
+  // 关 tab 流程(M3 语义不变):
+  // - 终态:sessionDispose(Rust 侧删条目)+ 本地移除(数据 + tab 视图)
   // - 运行中:AlertDialog 确认「停止并关闭」;绑了 worktree 的附选「同时删除
   //   worktree」→ stop(等 Exit)→ 可选 worktreeRemove → sessionDispose
-  const handleClose = useCallback(
-    (id: string) => {
-      const snap = useSessions.getState().sessions[id];
-      if (!snap || closingRef.current.has(id)) return;
+  const handleClose = useCallback((sessionId: string) => {
+    const snap = useSessions.getState().sessions[sessionId];
+    if (!snap || closingRef.current.has(sessionId)) return;
 
-      if (snap.state === "exited" || snap.state === "failed") {
-        closingRef.current.add(id);
-        void sessionDispose(id)
-          .catch((e) => console.error("[app] dispose 失败", e))
-          .finally(() => {
-            closingRef.current.delete(id);
-            disposeEntry(id);
-            closeTab(id);
-          });
-        return;
-      }
-      setConfirmClose({
-        id,
-        worktree:
-          snap.repoPath && snap.worktreeName
-            ? { repoPath: snap.repoPath, name: snap.worktreeName }
-            : undefined,
-      });
-    },
-    [closeTab]
-  );
+    if (snap.state === "exited" || snap.state === "failed") {
+      closingRef.current.add(sessionId);
+      void sessionDispose(sessionId)
+        .catch((e) => console.error("[app] dispose 失败", e))
+        .finally(() => {
+          closingRef.current.delete(sessionId);
+          disposeEntry(sessionId);
+          useSessions.getState().removeSession(sessionId);
+          useTabs.getState().closeTab(`term-${sessionId}`);
+        });
+      return;
+    }
+    setConfirmClose({
+      id: sessionId,
+      worktree:
+        snap.repoPath && snap.worktreeName
+          ? { repoPath: snap.repoPath, name: snap.worktreeName }
+          : undefined,
+    });
+  }, []);
 
   const confirmStopAndClose = useCallback(async () => {
     if (!confirmClose) return;
@@ -165,7 +149,8 @@ function App() {
     const finish = (): void => {
       closingRef.current.delete(id);
       disposeEntry(id);
-      closeTab(id);
+      useSessions.getState().removeSession(id);
+      useTabs.getState().closeTab(`term-${id}`);
     };
     try {
       await stopSession(id);
@@ -175,90 +160,50 @@ function App() {
       const cur = useSessions.getState().sessions[id];
       if (cur && cur.state !== "exited" && cur.state !== "failed") {
         closingRef.current.delete(id);
-        setError(`停止会话失败:当前状态 ${cur.state}`);
+        toast(`停止会话失败:当前状态 ${cur.state}`, "error");
         return;
       }
     }
     if (worktree && alsoRemoveWt) {
       await worktreeRemove(worktree.repoPath, worktree.name, true).catch((e) =>
-        setError(`worktree 清理失败:${String(e)}`)
+        toast(`worktree 清理失败:${String(e)}`, "error")
       );
     }
     await sessionDispose(id).catch(() => {}); // stop 后已终态;失败不阻本地收尾
     finish();
-  }, [confirmClose, alsoRemoveWt, closeTab]);
+  }, [confirmClose, alsoRemoveWt]);
 
-  const sessionIds = Object.keys(sessions);
+  // 确认框打开期间会话自行退出:不再需要确认,直接收尾(M3 终审 Minor)
+  useEffect(() => {
+    if (!confirmClose) return;
+    const snap = useSessions.getState().sessions[confirmClose.id];
+    if (snap && (snap.state === "exited" || snap.state === "failed")) {
+      const id = confirmClose.id;
+      setConfirmClose(null);
+      closingRef.current.add(id);
+      void sessionDispose(id)
+        .catch(() => {})
+        .finally(() => {
+          closingRef.current.delete(id);
+          disposeEntry(id);
+          useSessions.getState().removeSession(id);
+          useTabs.getState().closeTab(`term-${id}`);
+        });
+    }
+  }, [confirmClose, sessions]);
 
   return (
-    <main className="flex h-screen flex-col">
-      <header className="flex items-center gap-3 border-b px-4 py-2">
-        <strong>ItsukaNexus</strong>
-        {info && (
-          <span className="text-[13px] text-muted-foreground">
-            v{info.version} · {info.platform}
-          </span>
-        )}
-        <span className="flex-1" />
-        {gitInfo && !gitInfo.available && (
-          <span className="rounded-md bg-amber-500/15 px-2.5 py-1 text-xs text-amber-400">
-            未检测到 git——worktree 功能不可用(请安装 git ≥ 2.20)
-          </span>
-        )}
-        {gitInfo && gitInfo.available && !gitInfo.worktreeSupported && (
-          <span className="rounded-md bg-amber-500/15 px-2.5 py-1 text-xs text-amber-400">
-            git {gitInfo.version ?? ""} 版本过低——worktree 功能需要 git ≥ 2.20,请升级
-          </span>
-        )}
-        {gitInfo && gitInfo.available && gitInfo.worktreeSupported && (
-          <span className="text-xs text-muted-foreground">
-            git {gitInfo.version ?? "可用"}
-          </span>
-        )}
-        <Button size="sm" onClick={handleNew}>
-          新建会话
-        </Button>
-      </header>
-
-      <TerminalTabs
-        sessions={sessions}
-        activeId={activeId}
-        onSelect={setActive}
-        onClose={handleClose}
-      />
-
-      <div className="min-h-0 flex-1 p-1">
-        {sessionIds.map((id) => (
-          <div
-            key={id}
-            className={id === activeId ? "block h-full w-full" : "hidden"}
-          >
-            <TerminalPane sessionId={id} onFitted={handleFitted} />
-          </div>
-        ))}
-        {sessionIds.length === 0 && (
-          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-            暂无会话——点右上角「新建会话」开始
-          </div>
-        )}
-      </div>
-
-      {error && (
-        <footer className="bg-destructive/10 px-4 py-1 text-sm text-red-400">
-          {error}
-        </footer>
-      )}
-
-      <NewSessionDialog
-        open={newDialogOpen}
-        onOpenChange={setNewDialogOpen}
-        onError={setError}
-      />
-
+    <>
+      <Workbench gitInfo={gitInfo} onCloseTab={handleClose} onFitted={handleFitted} />
+      <Toaster />
       <AlertDialog
         open={confirmClose !== null}
         onOpenChange={(v) => {
-          if (!v) setConfirmClose(null);
+          // 关闭即重置附选项(M-5):不残留上一次的勾选状态
+          if (!v) {
+            setConfirmClose(null);
+            setAlsoRemoveWt(true);
+          }
         }}
       >
         <AlertDialogContent>
@@ -288,7 +233,7 @@ function App() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </main>
+    </>
   );
 }
 

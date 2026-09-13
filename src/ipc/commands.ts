@@ -9,6 +9,8 @@ import type {
   AppInfo,
   AttachAck,
   GitCheckInfo,
+  GitStatus,
+  ProjectEntry,
   PtyChunk,
   RepoInfo,
   SessionCreated,
@@ -121,4 +123,34 @@ export function worktreeRemove(
   deleteBranch: boolean
 ): Promise<void> {
   return invoke<void>("worktree_remove", { repoPath, name, deleteBranch });
+}
+
+export function projectList(): Promise<ProjectEntry[]> {
+  return invoke<ProjectEntry[]>("project_list");
+}
+
+/** 入册工作区目录(D 自身或其 git 子目录各为一个项目行;
+ *  后端归一 canonical 根、追加 repo 本地 exclude,返回该工作区全部条目) */
+export function projectAdd(path: string): Promise<ProjectEntry[]> {
+  return invoke<ProjectEntry[]>("project_add", { path });
+}
+
+export function projectRemove(projectId: string): Promise<void> {
+  return invoke<void>("project_remove", { projectId });
+}
+
+export function gitStatus(repoPath: string): Promise<GitStatus> {
+  return invoke<GitStatus>("git_status", { repoPath });
+}
+
+/** paths 缺省 = 全部暂存 */
+export function gitStage(repoPath: string, paths?: string[]): Promise<void> {
+  return invoke<void>("git_stage", {
+    repoPath,
+    paths: paths ?? null,
+  });
+}
+
+export function gitCommit(repoPath: string, message: string): Promise<void> {
+  return invoke<void>("git_commit", { repoPath, message });
 }

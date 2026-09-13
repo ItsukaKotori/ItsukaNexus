@@ -75,6 +75,43 @@ export interface WorktreeChanged {
   change: "created" | "removed";
 }
 
+/** project_list / project_add 返回(registry/mod.rs ProjectEntry) */
+export interface ProjectEntry {
+  id: string;
+  name: string;
+  path: string;
+  /** 所属工作区(添加的父目录,canonical);legacy 档 = path */
+  workspace: string;
+  addedAtMs: number;
+}
+
+/** porcelain v2 单侧状态(gitx/ops.rs FileStatus) */
+export type FileStatus =
+  | "modified"
+  | "added"
+  | "deleted"
+  | "renamed"
+  | "copied"
+  | "untracked"
+  | "unmerged";
+
+/** git_status 条目(gitx/ops.rs GitStatusEntry);null = 该侧无变化 */
+export interface GitStatusEntry {
+  path: string;
+  index: FileStatus | null;
+  worktree: FileStatus | null;
+  origPath: string | null;
+}
+
+/** git_status 返回(gitx/ops.rs GitStatus) */
+export interface GitStatus {
+  branch: string | null;
+  ahead: number;
+  behind: number;
+  entries: GitStatusEntry[];
+  truncated: boolean;
+}
+
 /** session://state 事件载荷(agent/state.rs StateChange,tag=type) */
 export interface StateChange {
   type: "state";

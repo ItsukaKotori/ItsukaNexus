@@ -1,4 +1,6 @@
 // session_*(M2):创建/订阅/输入/resize/关停/快照列表。
+use std::str::FromStr;
+
 use serde::Serialize;
 use tauri::State;
 
@@ -33,7 +35,10 @@ pub struct SessionCreated {
 
 /// 创建会话。repo_path + worktree_name 同时给出时,shell 的 cwd 落在
 /// `<repo>/.nx-worktrees/<worktreeName>`(目录必须已存在,由 worktree_create
-/// 先建);两者都缺省 = 纯 shell 会话(cwd 继承本进程,快照两字段 None)。
+/// 先建);repo_path 单独给出时 cwd 落项目根(M4 语义:TabStrip「+」选中
+/// 项目根即时开终端,快照 worktree_name None);两者都缺省 = 纯 shell 会话
+/// (cwd 继承本进程,快照两字段 None)。worktree_name 必须是 nexus 规范名
+/// (FromStr 校验,拒绝 `../` 等路径逃逸)。
 /// canonicalize 一并归一 macOS /var ↔ /private/var 形态;Windows verbatim
 /// 前缀(`\\?\`)对 portable-pty 的 cwd 是安全的(内部自行处理),不剥。
 #[tauri::command]
@@ -47,9 +52,14 @@ pub async fn session_create(
 ) -> Result<SessionCreated, String> {
     let launch = match (&repo_path, &worktree_name) {
         (Some(repo), Some(name)) => {
+            // 必办#1:worktree_name 必须是 nexus 命名规范的合法名(FromStr 校验),
+            // 拒绝 ../ 等路径逃逸;worktree_remove 不校验——它按 name 精确匹配
+            // 列表条目,无路径拼接,外建 worktree 名也要能删。
+            let wt_name = nexus_core::ids::WorktreeName::from_str(name)
+                .map_err(|e| nexus_core::NexusError::InvalidInput(e).to_string())?;
             let wt_dir = std::path::PathBuf::from(repo)
                 .join(".nx-worktrees")
-                .join(name);
+                .join(wt_name.as_str());
             let canonical = wt_dir.canonicalize().map_err(|e| {
                 nexus_core::NexusError::InvalidInput(format!(
                     "worktree 不存在 {}: {e}",
@@ -60,7 +70,7 @@ pub async fn session_create(
             Some(nexus_core::agent::manager::LaunchSpec {
                 cwd: canonical,
                 repo_path: Some(repo.clone()),
-                worktree_name: Some(name.clone()),
+                worktree_name: Some(wt_name.as_str().to_string()),
             })
         }
         (None, Some(_)) => {
@@ -69,9 +79,20 @@ pub async fn session_create(
             )
             .to_string());
         }
-        // (Some, None) 与 (None, None):repo_path 单独给出没有落点语义,
-        // 与全缺省同型(M2 行为)
-        _ => None,
+        (Some(repo), None) => {
+            // M4 落点语义(v1.2 完成标准②):repo_path 单独给出 = cwd 落项目根。
+            // M2 时代"无落点语义"已被 TabStrip「+」(选中项目根即时开终端)取代。
+            let canonical = std::path::PathBuf::from(repo).canonicalize().map_err(|e| {
+                nexus_core::NexusError::InvalidInput(format!("仓库目录不存在 {}: {e}", repo))
+                    .to_string()
+            })?;
+            Some(nexus_core::agent::manager::LaunchSpec {
+                cwd: canonical,
+                repo_path: Some(repo.clone()),
+                worktree_name: None,
+            })
+        }
+        (None, None) => None,
     };
     let id = state
         .create(
