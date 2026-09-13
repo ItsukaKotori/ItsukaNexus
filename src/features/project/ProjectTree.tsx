@@ -9,6 +9,7 @@ import type { ProjectEntry, SessionSnapshot } from "../../ipc/types";
 import { useProjects } from "../../stores/projectStore";
 import { useSessions } from "../../stores/sessionsStore";
 import { useTabs } from "../../stores/tabStore";
+import { toast } from "../../stores/toastStore";
 
 const DOT: Record<string, string> = {
   running: "bg-status-run",
@@ -81,7 +82,9 @@ function ProjectRow({
           title="从列表移除(不删除磁盘)"
           onClick={(e) => {
             e.stopPropagation();
-            void removeProject(project.id);
+            void removeProject(project.id).catch((e) =>
+              toast(`移除项目失败:${String(e)}`, "error")
+            );
           }}
           className="hidden shrink-0 rounded p-0.5 text-muted-foreground/60 hover:bg-secondary hover:text-foreground group-hover/project:block"
         >
