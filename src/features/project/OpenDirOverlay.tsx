@@ -10,14 +10,14 @@ import {
 } from "@/components/ui/dialog";
 
 import { useProjects } from "../../stores/projectStore";
+import { toast } from "../../stores/toastStore";
 
 interface Props {
   openState: boolean;
   onOpenChange: (v: boolean) => void;
-  onError: (msg: string) => void;
 }
 
-export default function OpenDirOverlay({ openState, onOpenChange, onError }: Props) {
+export default function OpenDirOverlay({ openState, onOpenChange }: Props) {
   const [path, setPath] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -44,13 +44,14 @@ export default function OpenDirOverlay({ openState, onOpenChange, onError }: Pro
       await useProjects.getState().addProject(p);
       onOpenChange(false);
     } catch (e) {
+      // 行内红字留在弹层内,toast 保证全局可见
       const msg = `打开失败:${String(e)}`;
       setErr(msg);
-      onError(msg);
+      toast(msg, "error");
     } finally {
       setSubmitting(false);
     }
-  }, [path, onOpenChange, onError]);
+  }, [path, onOpenChange]);
 
   return (
     <Dialog open={openState} onOpenChange={onOpenChange}>

@@ -16,6 +16,7 @@ import type { SessionSnapshot, SessionState } from "../../ipc/types";
 import { useProjects } from "../../stores/projectStore";
 import { useSessions } from "../../stores/sessionsStore";
 import { useTabs } from "../../stores/tabStore";
+import { toast } from "../../stores/toastStore";
 
 const DOT: Record<SessionState, string> = {
   running: "bg-status-run",
@@ -60,7 +61,7 @@ export default function TabStrip({ onClose }: Props) {
       useSessions.getState().add(snap);
       useTabs.getState().openTerminal(snap);
     } catch (e) {
-      console.error("[tabs] 新建终端失败", e);
+      toast(`新建终端失败:${String(e)}`, "error");
     }
   }, [selected]);
 

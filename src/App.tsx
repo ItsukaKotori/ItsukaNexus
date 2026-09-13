@@ -15,6 +15,8 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 
+import Toaster from "@/components/Toaster";
+
 import Workbench from "./app/Workbench";
 import {
   disposeEntry,
@@ -38,13 +40,15 @@ import type { GitCheckInfo } from "./ipc/types";
 import { useProjects } from "./stores/projectStore";
 import { useSessions } from "./stores/sessionsStore";
 import { useTabs } from "./stores/tabStore";
+import { toast } from "./stores/toastStore";
 
 function App() {
   const hydrate = useSessions((s) => s.hydrate);
+  // 确认框打开期间后台自行退出的观察依赖(effect 按 sessions 快照变化重跑)
+  const sessions = useSessions((s) => s.sessions);
 
   // git 探测结果经 props 传 ProjectSide(左栏黄条)
   const [gitInfo, setGitInfo] = useState<GitCheckInfo | null>(null);
-  const [error, setError] = useState<string | null>(null);
   // 启动流程只跑一次(StrictMode 下 effect 双执行)
   const bootedRef = useRef(false);
   // 关闭收尾在途的会话:确认框重复确认/收尾中再点不去重入 stop(仅 Running 可停)
@@ -156,31 +160,50 @@ function App() {
       const cur = useSessions.getState().sessions[id];
       if (cur && cur.state !== "exited" && cur.state !== "failed") {
         closingRef.current.delete(id);
-        setError(`停止会话失败:当前状态 ${cur.state}`);
+        toast(`停止会话失败:当前状态 ${cur.state}`, "error");
         return;
       }
     }
     if (worktree && alsoRemoveWt) {
       await worktreeRemove(worktree.repoPath, worktree.name, true).catch((e) =>
-        setError(`worktree 清理失败:${String(e)}`)
+        toast(`worktree 清理失败:${String(e)}`, "error")
       );
     }
     await sessionDispose(id).catch(() => {}); // stop 后已终态;失败不阻本地收尾
     finish();
   }, [confirmClose, alsoRemoveWt]);
 
+  // 确认框打开期间会话自行退出:不再需要确认,直接收尾(M3 终审 Minor)
+  useEffect(() => {
+    if (!confirmClose) return;
+    const snap = useSessions.getState().sessions[confirmClose.id];
+    if (snap && (snap.state === "exited" || snap.state === "failed")) {
+      const id = confirmClose.id;
+      setConfirmClose(null);
+      closingRef.current.add(id);
+      void sessionDispose(id)
+        .catch(() => {})
+        .finally(() => {
+          closingRef.current.delete(id);
+          disposeEntry(id);
+          useSessions.getState().removeSession(id);
+          useTabs.getState().closeTab(`term-${id}`);
+        });
+    }
+  }, [confirmClose, sessions]);
+
   return (
     <>
       <Workbench gitInfo={gitInfo} onCloseTab={handleClose} onFitted={handleFitted} />
-      {error && (
-        <footer className="fixed inset-x-0 bottom-0 bg-destructive/10 px-4 py-1 text-sm text-destructive">
-          {error}
-        </footer>
-      )}
+      <Toaster />
       <AlertDialog
         open={confirmClose !== null}
         onOpenChange={(v) => {
-          if (!v) setConfirmClose(null);
+          // 关闭即重置附选项(M-5):不残留上一次的勾选状态
+          if (!v) {
+            setConfirmClose(null);
+            setAlsoRemoveWt(true);
+          }
         }}
       >
         <AlertDialogContent>

@@ -1,4 +1,5 @@
-// 左栏(spec §1.5):标题行 + git 探测条 + 项目树。打开目录走 OpenDirOverlay。
+// 左栏(spec §1.5):标题行 + git 探测条 + 项目树。打开目录走 OpenDirOverlay
+// (失败经全局 toast 报告,行内红字留在弹层内)。
 import { useState } from "react";
 import { FolderPlus } from "lucide-react";
 
@@ -8,7 +9,6 @@ import OpenDirOverlay from "./OpenDirOverlay";
 
 export default function ProjectSide({ gitInfo }: { gitInfo: GitCheckInfo | null }) {
   const [openDir, setOpenDir] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
 
   return (
     <aside className="flex min-w-0 flex-1 flex-col">
@@ -32,17 +32,8 @@ export default function ProjectSide({ gitInfo }: { gitInfo: GitCheckInfo | null 
             : "未检测到 git——请安装 git ≥ 2.20"}
         </div>
       )}
-      {err && (
-        <div className="border-b border-border bg-destructive/10 px-3 py-1 text-[11px] text-destructive">
-          {err}
-        </div>
-      )}
       <ProjectTree />
-      <OpenDirOverlay
-        openState={openDir}
-        onOpenChange={setOpenDir}
-        onError={setErr}
-      />
+      <OpenDirOverlay openState={openDir} onOpenChange={setOpenDir} />
     </aside>
   );
 }

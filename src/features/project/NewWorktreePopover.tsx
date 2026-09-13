@@ -23,6 +23,7 @@ import type { SessionSnapshot, WorktreeInfo } from "../../ipc/types";
 import { useProjects } from "../../stores/projectStore";
 import { useSessions } from "../../stores/sessionsStore";
 import { useTabs } from "../../stores/tabStore";
+import { toast } from "../../stores/toastStore";
 
 interface Props {
   repoPath: string;
@@ -81,7 +82,10 @@ export default function NewWorktreePopover({ repoPath, onDone }: Props) {
           console.error("[worktree] 孤儿回滚失败,请手动清理", wt?.name, rmErr)
         );
       }
-      setErr(`创建失败:${String(e)}`);
+      const msg = `创建失败:${String(e)}`;
+      // 行内红字用于弹层内反馈,toast 用于全局可见
+      setErr(msg);
+      toast(msg, "error");
     } finally {
       setSubmitting(false);
     }

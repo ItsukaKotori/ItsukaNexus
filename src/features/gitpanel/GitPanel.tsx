@@ -8,6 +8,7 @@ import { onWorktreeChanged } from "../../ipc/events";
 import { gitCommit, gitStage, gitStatus } from "../../ipc/commands";
 import type { GitStatus, GitStatusEntry } from "../../ipc/types";
 import { useProjects } from "../../stores/projectStore";
+import { toast } from "../../stores/toastStore";
 
 const LETTER: Record<string, { ch: string; cls: string }> = {
   modified: { ch: "M", cls: "text-status-warn" },
@@ -41,7 +42,10 @@ export default function GitPanel() {
       setStatus(await gitStatus(repoPath));
       setErr(null);
     } catch (e) {
-      setErr(`状态获取失败:${String(e)}`);
+      const msg = `状态获取失败:${String(e)}`;
+      // 行内 err 区保留面板内反馈,toast 保证全局可见
+      setErr(msg);
+      toast(msg, "error");
     }
   }, [repoPath]);
 
@@ -68,7 +72,9 @@ export default function GitPanel() {
       await gitStage(repoPath);
       await refresh();
     } catch (e) {
-      setErr(`暂存失败:${String(e)}`);
+      const msg = `暂存失败:${String(e)}`;
+      setErr(msg);
+      toast(msg, "error");
     } finally {
       setBusy(false);
     }
@@ -82,7 +88,9 @@ export default function GitPanel() {
       setMessage("");
       await refresh();
     } catch (e) {
-      setErr(`提交失败:${String(e)}`);
+      const msg = `提交失败:${String(e)}`;
+      setErr(msg);
+      toast(msg, "error");
     } finally {
       setBusy(false);
     }
